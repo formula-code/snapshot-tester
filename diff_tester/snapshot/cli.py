@@ -219,6 +219,10 @@ class SnapshotCLI:
                             failure_reason=failure_reason
                         )
                         print(f"  Failed to capture with params: {params} - {failure_reason}")
+                        if self.config.verbose and result and result.error:
+                            import traceback
+                            print(f"    Full error traceback:")
+                            traceback.print_exc()
             else:
                 # Capture without parameters
                 result = runner.run_benchmark(benchmark)
@@ -242,6 +246,10 @@ class SnapshotCLI:
                         failure_reason=failure_reason
                     )
                     print(f"  Failed to capture - {failure_reason}")
+                    if self.config.verbose and result and result.error:
+                        import traceback
+                        print(f"    Full error traceback:")
+                        traceback.print_exc()
         
         print(f"Captured {captured_count} snapshots")
         return 0

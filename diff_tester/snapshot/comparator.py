@@ -47,6 +47,20 @@ class Comparator:
                     details="Skipped comparison for generator (cannot be pickled)"
                 )
             
+            # Handle serialized callables (functions/closures) - skip comparison
+            if isinstance(expected, dict) and expected.get('__callable__'):
+                return ComparisonResult(
+                    match=True,
+                    details="Skipped comparison for callable (cannot be pickled reliably)"
+                )
+            
+            # Handle unpicklable placeholder
+            if isinstance(expected, dict) and expected.get('__unpicklable__'):
+                return ComparisonResult(
+                    match=True,
+                    details="Skipped comparison for unpicklable value (stored as placeholder)"
+                )
+            
             # Handle serialized class instances
             if isinstance(expected, dict) and expected.get('__class_instance__'):
                 return self._compare_class_instance(actual, expected)

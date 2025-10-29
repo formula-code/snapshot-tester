@@ -206,11 +206,69 @@ class BenchmarkRunner:
         self.tracer.start_tracing()
         
         try:
-            # Execute the benchmark function
+            # For benchmarks that don't return values, we need to capture the result
+            # of the deepest function call. We'll use AST manipulation to modify
+            # the benchmark function to return its result.
+            import ast
+            import inspect
+            
+            # Get the source code of the benchmark function
+            try:
+                source = inspect.getsource(benchmark_func)
+                
+                # Parse the AST
+                tree = ast.parse(source)
+                
+                # Find the function definition
+                func_def = tree.body[0]
+                
+                # Find the last statement in the function body
+                if func_def.body:
+                    last_stmt = func_def.body[-1]
+                    
+                    # If the last statement is an expression (like fitting.LevMarLSQFitter()),
+                    # modify it to return the result
+                    if isinstance(last_stmt, ast.Expr):
+                        # Create a return statement with the same expression
+                        return_stmt = ast.Return(value=last_stmt.value)
+                        func_def.body[-1] = return_stmt
+                        
+                        # Compile the modified function
+                        modified_code = compile(tree, f"<modified_{benchmark.name}>", "exec")
+                        
+                        # Execute in the module's namespace
+                        namespace = module.__dict__.copy()
+                        exec(modified_code, namespace)
+                        
+                        # Get the modified function
+                        modified_func = namespace[benchmark.name]
+                        
+                        # Execute the modified function
+                        result_value = modified_func()
+                        
+                        # Create a TraceResult with the captured value
+                        result = TraceResult(
+                            return_value=result_value,
+                            function_name=benchmark.name,
+                            module_path=benchmark.module_path,
+                            depth=0,
+                            success=True
+                        )
+                        
+                        # Stop tracing
+                        self.tracer.stop_tracing()
+                        return result
+                        
+            except Exception as ast_error:
+                # Fall back to original execution
+                pass
+            
+            # Fallback: execute the original function
             benchmark_func()
             
             # Stop tracing and get result
             result = self.tracer.stop_tracing()
+            
             return result
             
         except Exception as e:

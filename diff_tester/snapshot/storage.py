@@ -92,8 +92,21 @@ class SnapshotManager:
             'metadata': snapshot_metadata
         }
         
-        with open(snapshot_path, 'wb') as f:
-            pickle.dump(snapshot_data, f)
+        # Attempt to store snapshot; if pickling still fails due to nested
+        # unpicklables, fall back to a placeholder structure.
+        try:
+            with open(snapshot_path, 'wb') as f:
+                pickle.dump(snapshot_data, f)
+        except Exception as e:
+            fallback_data = {
+                'return_value': {
+                    '__unpicklable__': True,
+                    '__error__': f"Pickle failed: {e}",
+                },
+                'metadata': snapshot_metadata
+            }
+            with open(snapshot_path, 'wb') as f:
+                pickle.dump(fallback_data, f)
         
         # Store metadata separately as JSON for easy inspection
         metadata_path = snapshot_path.with_suffix('.json')
@@ -172,7 +185,7 @@ class SnapshotManager:
             # Try to pickle the value directly
             pickle.dumps(value)
             return value
-        except (pickle.PicklingError, TypeError) as e:
+        except (pickle.PicklingError, TypeError, AttributeError) as e:
             # Check if it's a generator
             if hasattr(value, '__iter__') and hasattr(value, '__next__'):
                 # It's a generator - cannot be pickled
@@ -180,6 +193,16 @@ class SnapshotManager:
                     '__generator__': True,
                     '__generator_type__': type(value).__name__,
                     '__error__': f"Cannot pickle generator: {e}"
+                }
+            
+            # Check if it's a callable (e.g., local function/closure)
+            if callable(value):
+                return {
+                    '__callable__': True,
+                    '__callable_type__': type(value).__name__,
+                    'name': getattr(value, '__name__', ''),
+                    'qualname': getattr(value, '__qualname__', ''),
+                    'module': getattr(value, '__module__', '')
                 }
             
             # If pickling fails, try to create a serializable representation

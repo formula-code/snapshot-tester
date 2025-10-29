@@ -31,6 +31,7 @@ class ExecutionTracer:
         self.current_depth = 0
         self.max_depth_reached = 0
         self.tracing = False
+        self.current_frame: Optional[types.FrameType] = None
         
         # Functions to exclude from tracing
         self.excluded_modules = {
@@ -85,7 +86,11 @@ class ExecutionTracer:
         # Limit depth to prevent infinite recursion
         if self.current_depth > self.max_depth:
             return None
-            
+        
+        # Store the frame for potential result capture
+        self.current_frame = frame
+        
+        # No more debug print here
         return self._trace_calls
     
     def _handle_return(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
