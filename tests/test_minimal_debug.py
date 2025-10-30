@@ -20,7 +20,7 @@ def test_minimal_benchmarks():
     # Copy our test benchmark file
     import shutil
 
-    shutil.copy("test_benchmarks.py", benchmark_dir / "test_benchmarks.py")
+    shutil.copy("tests/test_benchmarks.py", benchmark_dir / "test_benchmarks.py")
 
     discovery = BenchmarkDiscovery(benchmark_dir)
     benchmarks = discovery.discover_all()
