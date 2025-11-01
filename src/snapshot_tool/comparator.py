@@ -338,11 +338,11 @@ class Comparator:
         return isinstance(value, (int, float, np.number)) and np.isscalar(value)
 
     def _is_sequence(self, value: Any) -> bool:
-        """Check if value is a sequence (but not a string)."""
+        """Check if value is a sequence (but not a string or dict)."""
         return (
             hasattr(value, "__len__")
             and hasattr(value, "__getitem__")
-            and not isinstance(value, (str, bytes))
+            and not isinstance(value, (str, bytes, dict))
         )
 
     def compare_multiple(

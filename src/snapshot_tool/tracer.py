@@ -34,7 +34,7 @@ class ExecutionTracer:
         self.tracing = False
         self.current_frame: Optional[types.FrameType] = None
 
-        # Functions to exclude from tracing
+        # Functions to exclude from tracing - expanded to include all stdlib modules
         self.excluded_modules = {
             "builtins",
             "sys",
@@ -46,6 +46,63 @@ class ExecutionTracer:
             "itertools",
             "functools",
             "operator",
+            "re",
+            "json",
+            "pickle",
+            "io",
+            "abc",
+            "copy",
+            "copyreg",
+            "enum",
+            "importlib",
+            "inspect",
+            "ast",
+            "codecs",
+            "encodings",
+            "weakref",
+            "gc",
+            "threading",
+            "multiprocessing",
+            "concurrent",
+            "queue",
+            "socket",
+            "select",
+            "selectors",
+            "signal",
+            "subprocess",
+            "time",
+            "datetime",
+            "calendar",
+            "contextlib",
+            "traceback",
+            "warnings",
+            "logging",
+            "argparse",
+            "unittest",
+            "pytest",
+            "tokenize",
+            "token",
+            "keyword",
+            "linecache",
+            "sre",
+            "_sre",
+            "string",
+            "textwrap",
+            "pprint",
+            "reprlib",
+            "_pytest",
+            "genericpath",
+            "posixpath",
+            "ntpath",
+            "macpath",
+            "stat",
+            "shutil",
+            "glob",
+            "fnmatch",
+            "tempfile",
+            "atexit",
+            "platform",
+            "site",
         }
 
         # Method names to exclude
@@ -71,6 +128,41 @@ class ExecutionTracer:
             "__delitem__",
             "__contains__",
         }
+
+    def trace_execution(self, func: Callable, *args, **kwargs) -> TraceResult:
+        """
+        Convenience method to trace a function's execution.
+
+        Args:
+            func: The function to trace
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            TraceResult containing the captured return value
+        """
+        self.start_tracing()
+        try:
+            # Execute the function
+            func(*args, **kwargs)
+        except Exception as e:
+            # Even if the function raises an exception, we might have captured something
+            pass
+        finally:
+            result = self.stop_tracing()
+
+        # If we didn't capture anything, return a failed result
+        if result is None:
+            return TraceResult(
+                return_value=None,
+                function_name=func.__name__,
+                module_name=getattr(func, "__module__", "<unknown>"),
+                depth=0,
+                success=False,
+                error=None,
+            )
+
+        return result
 
     def start_tracing(self) -> None:
         """Start tracing function calls."""
@@ -166,8 +258,22 @@ class ExecutionTracer:
         module_name = frame.f_globals["__name__"]
         function_name = frame.f_code.co_name
 
-        # Skip excluded modules
+        # Skip excluded modules (manual list)
         if any(module_name.startswith(excluded) for excluded in self.excluded_modules):
+            return False
+
+        # Skip all standard library modules using sys.stdlib_module_names (Python 3.10+)
+        if hasattr(sys, 'stdlib_module_names'):
+            # Check if the module or any parent module is in stdlib
+            module_parts = module_name.split('.')
+            for i in range(len(module_parts)):
+                partial_name = '.'.join(module_parts[:i+1])
+                if partial_name in sys.stdlib_module_names:
+                    return False
+
+        # Skip numpy internals and other common third-party library internals
+        numpy_internal_patterns = ['numpy._core', 'numpy.core', 'numpy.lib', 'numpy.ma']
+        if any(module_name.startswith(pattern) for pattern in numpy_internal_patterns):
             return False
 
         # Skip excluded methods
