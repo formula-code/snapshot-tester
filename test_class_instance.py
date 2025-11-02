@@ -7,14 +7,14 @@ import numpy as np
 
 class TestClass:
     """A simple test class to verify class instance capture."""
-
+    
     def __init__(self, value):
         self.value = value
         self.data = np.array([1, 2, 3, 4, 5]) * value
-
+    
     def __repr__(self):
         return f"TestClass(value={self.value})"
-
+    
     def __eq__(self, other):
         if not isinstance(other, TestClass):
             return False
@@ -38,11 +38,11 @@ def time_class_with_data():
 
 class ClassBenchmark:
     """Benchmark class that returns class instances."""
-
+    
     def time_class_method(self):
         """Method that returns a class instance."""
         return create_test_class(200)
-
+    
     def time_class_with_params(self):
         """Method that returns a class instance with parameters."""
         return create_test_class(300)

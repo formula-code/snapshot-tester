@@ -12,76 +12,52 @@ This tool integrates with ASV (airspeed-velocity) benchmarks to:
 
 ## Installation
 
-### Using uv (recommended)
+The tool is implemented as a Python package. Make sure you have the required dependencies:
 
 ```bash
-# Install with uv
-uv pip install -e .
-
-# Or install directly from repository
-uv pip install git+https://github.com/formulacode/snapshot-tester.git
-```
-
-### Using pip
-
-```bash
-# Install in development mode
-pip install -e .
-
-# Or install directly
-pip install git+https://github.com/formulacode/snapshot-tester.git
+pip install numpy
 ```
 
 ## Usage
 
 ### Command Line Interface
 
-After installation, use the `snapshot-tool` command:
+The main CLI script is `snapshot_test.py`. Here are the available commands:
 
 #### List Benchmarks
 ```bash
-snapshot-tool list <benchmark_dir> [--filter PATTERN]
+python snapshot_test.py list <benchmark_dir> [--filter PATTERN]
 ```
 
 Example:
 ```bash
-snapshot-tool list examples/astropy-benchmarks/benchmarks --filter time_angle
+python snapshot_test.py list examples/astropy-benchmarks/benchmarks --filter time_angle
 ```
 
 #### Capture Snapshots
 ```bash
-snapshot-tool capture <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR]
+python snapshot_test.py capture <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR]
 ```
 
 This captures baseline snapshots of all benchmark outputs.
 
 #### Verify Against Snapshots
 ```bash
-snapshot-tool verify <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR] [--tolerance RTOL ATOL]
+python snapshot_test.py verify <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR] [--tolerance RTOL ATOL]
 ```
 
 This runs benchmarks and compares outputs against stored snapshots.
 
 #### Configuration
 ```bash
-snapshot-tool config --init    # Create default config
-snapshot-tool config --show    # Show current config
-```
-
-#### Running with uv
-
-You can also run the tool without installation using `uv run`:
-
-```bash
-uv run snapshot-tool list <benchmark_dir>
-uv run snapshot-tool capture <benchmark_dir>
-uv run snapshot-tool verify <benchmark_dir>
+python snapshot_test.py config --init    # Create default config
+python snapshot_test.py config --show    # Show current config
 ```
 
 ### Programmatic Usage
 
 ```python
-from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager, Comparator
+from diff_tester.snapshot import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager, Comparator
 
 # Discover benchmarks
 discovery = BenchmarkDiscovery("benchmarks/")

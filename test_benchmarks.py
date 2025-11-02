@@ -13,18 +13,18 @@ def time_simple_function():
 def time_simple_calculation():
     """Simple calculation benchmark."""
     x = np.linspace(0, 10, 100)
-    y = np.sin(x) * np.exp(-x / 5)
+    y = np.sin(x) * np.exp(-x/5)
     return y
 
 
 class SimpleBenchmark:
     """Simple class-based benchmark."""
-
+    
     def setup(self):
         """Setup method."""
         self.data = np.random.random(1000)
         self.multiplier = 2.5
-
+    
     def time_calculation(self):
         """Benchmark method."""
         result = self.data * self.multiplier
@@ -33,15 +33,15 @@ class SimpleBenchmark:
 
 class ParameterizedBenchmark:
     """Parameterized benchmark."""
-
+    
     params = ([1, 2, 3], [10, 100, 1000])
-    param_names = ["multiplier", "size"]
-
+    param_names = ['multiplier', 'size']
+    
     def setup(self, multiplier, size):
         """Setup with parameters."""
         self.multiplier = multiplier
         self.data = np.random.random(size)
-
+    
     def time_parameterized_calculation(self):
         """Parameterized benchmark method."""
         result = self.data * self.multiplier
