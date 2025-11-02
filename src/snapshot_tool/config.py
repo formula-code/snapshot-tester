@@ -6,9 +6,12 @@ for the snapshot testing tool.
 """
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,7 +63,7 @@ class SnapshotConfig:
                 data = json.load(f)
             return cls.from_dict(data)
         except Exception as e:
-            print(f"Warning: Failed to load config from {config_path}: {e}")
+            logger.warning(f"Failed to load config from {config_path}: {e}")
             return cls()
 
     def save_to_file(self, config_path: Path) -> None:
@@ -125,4 +128,4 @@ class ConfigManager:
         """Create a default configuration file."""
         default_config = SnapshotConfig()
         default_config.save_to_file(self.config_path)
-        print(f"Created default configuration at {self.config_path}")
+        logger.info(f"Created default configuration at {self.config_path}")

@@ -6,7 +6,11 @@ of ASV benchmark outputs.
 """
 
 import argparse
+import json
+import logging
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .comparator import Comparator, ComparisonConfig
@@ -14,6 +18,8 @@ from .config import ConfigManager
 from .discovery import BenchmarkDiscovery
 from .runner import BenchmarkRunner
 from .storage import SnapshotManager
+
+logger = logging.getLogger(__name__)
 
 
 class SnapshotCLI:
@@ -31,10 +37,10 @@ class SnapshotCLI:
         try:
             return parsed_args.func(parsed_args)
         except KeyboardInterrupt:
-            print("\nInterrupted by user")
+            logger.info("\nInterrupted by user")
             return 1
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(f"Error: {e}")
             if self.config.verbose:
                 import traceback
 
@@ -83,6 +89,12 @@ class SnapshotCLI:
             type=float,
             help="Relative and absolute tolerance for comparison",
         )
+        verify_parser.add_argument(
+            "--summary",
+            type=Path,
+            default=Path("summary.json"),
+            help="Path to write summary JSON file (default: summary.json)",
+        )
         verify_parser.set_defaults(func=self._verify_command)
 
         # List command
@@ -128,8 +140,8 @@ class SnapshotCLI:
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
 
-        print(f"Capturing snapshots from {benchmark_dir}")
-        print(f"Storing snapshots in {snapshot_dir}")
+        logger.info(f"Capturing snapshots from {benchmark_dir}")
+        logger.info(f"Storing snapshots in {snapshot_dir}")
 
         # Initialize components
         runner = BenchmarkRunner(benchmark_dir)
@@ -140,17 +152,17 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if args.filter in b.name]
+            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
 
         captured_count = 0
 
         for benchmark in benchmarks:
             if self.config.should_exclude_benchmark(benchmark.name):
                 if not self.config.quiet:
-                    print(f"Skipping excluded benchmark: {benchmark.name}")
+                    logger.info(f"Skipping excluded benchmark: {benchmark.name}")
                 continue
 
-            print(f"Capturing: {benchmark.module_path}.{benchmark.name}")
+            logger.info(f"Capturing: {benchmark.module_path}.{benchmark.name}")
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Capture with all parameter combinations
@@ -169,7 +181,7 @@ class SnapshotCLI:
                         )
                         captured_count += 1
                         if not self.config.quiet:
-                            print(f"  Captured with params: {params}")
+                            logger.info(f"  Captured with params: {params}")
                     else:
                         # Store failed capture marker
                         failure_reason = (
@@ -183,11 +195,11 @@ class SnapshotCLI:
                             failure_reason=failure_reason,
                             class_name=benchmark.class_name,
                         )
-                        print(f"  Failed to capture with params: {params} - {failure_reason}")
+                        logger.warning(f"  Failed to capture with params: {params} - {failure_reason}")
                         if self.config.verbose and result and result.error:
                             import traceback
 
-                            print("    Full error traceback:")
+                            logger.debug("    Full error traceback:")
                             traceback.print_exc()
             else:
                 # Capture without parameters
@@ -215,14 +227,14 @@ class SnapshotCLI:
                         failure_reason=failure_reason,
                         class_name=benchmark.class_name,
                     )
-                    print(f"  Failed to capture - {failure_reason}")
+                    logger.warning(f"  Failed to capture - {failure_reason}")
                     if self.config.verbose and result and result.error:
                         import traceback
 
-                        print("    Full error traceback:")
+                        logger.debug("    Full error traceback:")
                         traceback.print_exc()
 
-        print(f"Captured {captured_count} snapshots")
+        logger.info(f"Captured {captured_count} snapshots")
         return 0
 
     def _verify_command(self, args) -> int:
@@ -238,8 +250,8 @@ class SnapshotCLI:
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
 
-        print(f"Verifying benchmarks in {benchmark_dir}")
-        print(f"Comparing against snapshots in {snapshot_dir}")
+        logger.info(f"Verifying benchmarks in {benchmark_dir}")
+        logger.info(f"Comparing against snapshots in {snapshot_dir}")
 
         # Initialize components
         runner = BenchmarkRunner(benchmark_dir)
@@ -262,19 +274,20 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if args.filter in b.name]
+            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
 
         total_tests = 0
         passed_tests = 0
         failed_tests = 0
+        skipped_tests = 0
 
         for benchmark in benchmarks:
             if self.config.should_exclude_benchmark(benchmark.name):
                 if not self.config.quiet:
-                    print(f"Skipping excluded benchmark: {benchmark.name}")
+                    logger.info(f"Skipping excluded benchmark: {benchmark.name}")
                 continue
 
-            print(f"Verifying: {benchmark.module_path}.{benchmark.name}")
+            logger.info(f"Verifying: {benchmark.module_path}.{benchmark.name}")
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Verify with all parameter combinations
@@ -283,13 +296,15 @@ class SnapshotCLI:
                 for params in param_combinations:
                     # Check if this was a failed capture
                     if storage.is_failed_capture(benchmark.name, benchmark.module_path, params):
-                        print(f"  Skipping failed capture with params: {params}")
+                        logger.info(f"  Skipping failed capture with params: {params}")
+                        skipped_tests += 1
+                        total_tests += 1
                         continue
 
                     # Run benchmark
                     result = runner.run_benchmark(benchmark, params)
                     if not result or not result.success:
-                        print(f"  Failed to run with params: {params}")
+                        logger.warning(f"  Failed to run with params: {params}")
                         failed_tests += 1
                         total_tests += 1
                         continue
@@ -299,10 +314,11 @@ class SnapshotCLI:
                         benchmark_name=benchmark.name,
                         module_path=benchmark.module_path,
                         parameters=params,
+                        class_name=benchmark.class_name,
                     )
 
                     if snapshot_data is None:
-                        print(f"  No snapshot found for params: {params}")
+                        logger.warning(f"  No snapshot found for params: {params}")
                         failed_tests += 1
                         total_tests += 1
                         continue
@@ -313,36 +329,47 @@ class SnapshotCLI:
                     comparison = comparator.compare(result.return_value, expected_value)
                     total_tests += 1
 
-                    if comparison.match:
+                    if comparison.skipped:
+                        skipped_tests += 1
+                        if not self.config.quiet:
+                            logger.info(f"  ⊘ Skipped with params: {params}")
+                            if self.config.verbose and comparison.details:
+                                logger.debug(f"    Reason: {comparison.details}")
+                    elif comparison.match:
                         passed_tests += 1
                         if not self.config.quiet:
-                            print(f"  ✓ Passed with params: {params}")
+                            logger.info(f"  ✓ Passed with params: {params}")
                     else:
                         failed_tests += 1
-                        print(f"  ✗ Failed with params: {params}")
-                        print(f"    Error: {comparison.error_message}")
+                        logger.error(f"  ✗ Failed with params: {params}")
+                        logger.error(f"    Error: {comparison.error_message}")
                         if self.config.verbose and comparison.details:
-                            print(f"    Details: {comparison.details}")
+                            logger.debug(f"    Details: {comparison.details}")
             else:
                 # Check if this was a failed capture
                 if storage.is_failed_capture(benchmark.name, benchmark.module_path, ()):
-                    print("  Skipping failed capture")
+                    logger.info("  Skipping failed capture")
+                    skipped_tests += 1
+                    total_tests += 1
                     continue
 
                 # Verify without parameters
                 result = runner.run_benchmark(benchmark)
                 if not result or not result.success:
-                    print("  Failed to run")
+                    logger.warning("  Failed to run")
                     failed_tests += 1
                     total_tests += 1
                     continue
 
                 snapshot_data = storage.load_snapshot(
-                    benchmark_name=benchmark.name, module_path=benchmark.module_path, parameters=()
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=(),
+                    class_name=benchmark.class_name,
                 )
 
                 if snapshot_data is None:
-                    print("  No snapshot found")
+                    logger.warning("  No snapshot found")
                     failed_tests += 1
                     total_tests += 1
                     continue
@@ -352,21 +379,47 @@ class SnapshotCLI:
                 comparison = comparator.compare(result.return_value, expected_value)
                 total_tests += 1
 
-                if comparison.match:
+                if comparison.skipped:
+                    skipped_tests += 1
+                    if not self.config.quiet:
+                        logger.info("  ⊘ Skipped")
+                        if self.config.verbose and comparison.details:
+                            logger.debug(f"    Reason: {comparison.details}")
+                elif comparison.match:
                     passed_tests += 1
                     if not self.config.quiet:
-                        print("  ✓ Passed")
+                        logger.info("  ✓ Passed")
                 else:
                     failed_tests += 1
-                    print("  ✗ Failed")
-                    print(f"    Error: {comparison.error_message}")
+                    logger.error("  ✗ Failed")
+                    logger.error(f"    Error: {comparison.error_message}")
                     if self.config.verbose and comparison.details:
-                        print(f"    Details: {comparison.details}")
+                        logger.debug(f"    Details: {comparison.details}")
 
-        print("\nVerification complete:")
-        print(f"  Total tests: {total_tests}")
-        print(f"  Passed: {passed_tests}")
-        print(f"  Failed: {failed_tests}")
+        logger.info("\nVerification complete:")
+        logger.info(f"  Total tests: {total_tests}")
+        logger.info(f"  Passed: {passed_tests}")
+        logger.info(f"  Failed: {failed_tests}")
+        logger.info(f"  Skipped: {skipped_tests}")
+
+        # Write summary.json
+        summary = {
+            "total": total_tests,
+            "passed": passed_tests,
+            "failed": failed_tests,
+            "skipped": skipped_tests,
+            "timestamp": datetime.now().isoformat(),
+            "snapshot_dir": str(snapshot_dir),
+            "benchmark_dir": str(benchmark_dir),
+        }
+
+        summary_path = args.summary if hasattr(args, 'summary') else Path("summary.json")
+        try:
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            logger.info(f"\nSummary written to {summary_path}")
+        except Exception as e:
+            logger.warning(f"Failed to write summary.json: {e}")
 
         return 0 if failed_tests == 0 else 1
 
@@ -378,27 +431,27 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if args.filter in b.name]
+            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
 
-        print(f"Found {len(benchmarks)} benchmarks in {benchmark_dir}:")
+        logger.info(f"Found {len(benchmarks)} benchmarks in {benchmark_dir}:")
 
         for benchmark in benchmarks:
-            print(f"  {benchmark.module_path}.{benchmark.name}")
+            logger.info(f"  {benchmark.module_path}.{benchmark.name}")
             if benchmark.benchmark_type == "method":
-                print(f"    Type: method in class {benchmark.class_name}")
+                logger.info(f"    Type: method in class {benchmark.class_name}")
                 if benchmark.has_setup:
-                    print(f"    Setup: {benchmark.setup_method}")
+                    logger.info(f"    Setup: {benchmark.setup_method}")
             else:
-                print("    Type: function")
+                logger.info("    Type: function")
 
             if benchmark.params:
                 param_combinations = discovery.generate_parameter_combinations(benchmark)
-                print(f"    Parameters: {len(param_combinations)} combinations")
+                logger.info(f"    Parameters: {len(param_combinations)} combinations")
                 if self.config.verbose:
                     for i, params in enumerate(param_combinations[:5]):  # Show first 5
-                        print(f"      {i + 1}: {params}")
+                        logger.debug(f"      {i + 1}: {params}")
                     if len(param_combinations) > 5:
-                        print(f"      ... and {len(param_combinations) - 5} more")
+                        logger.debug(f"      ... and {len(param_combinations) - 5} more")
 
         return 0
 
@@ -407,22 +460,22 @@ class SnapshotCLI:
         snapshot_dir = args.snapshot_dir or self.config.get_snapshot_dir()
 
         if not snapshot_dir.exists():
-            print(f"Snapshot directory {snapshot_dir} does not exist")
+            logger.info(f"Snapshot directory {snapshot_dir} does not exist")
             return 0
 
         storage = SnapshotManager(snapshot_dir)
         stats = storage.get_snapshot_stats()
 
-        print(f"Snapshot directory: {snapshot_dir}")
-        print(f"Total snapshots: {stats['total_snapshots']}")
-        print(f"Total size: {stats['total_size_bytes'] / 1024 / 1024:.2f} MB")
+        logger.info(f"Snapshot directory: {snapshot_dir}")
+        logger.info(f"Total snapshots: {stats['total_snapshots']}")
+        logger.info(f"Total size: {stats['total_size_bytes'] / 1024 / 1024:.2f} MB")
 
         if args.dry_run:
-            print("Dry run - no files would be deleted")
+            logger.info("Dry run - no files would be deleted")
             return 0
 
         # For now, just show stats. Could add more sophisticated cleanup logic
-        print("Use --dry-run to see what would be cleaned")
+        logger.info("Use --dry-run to see what would be cleaned")
 
         return 0
 
@@ -433,13 +486,13 @@ class SnapshotCLI:
             return 0
 
         if args.show:
-            print("Current configuration:")
+            logger.info("Current configuration:")
             config_dict = self.config.to_dict()
             for key, value in config_dict.items():
-                print(f"  {key}: {value}")
+                logger.info(f"  {key}: {value}")
             return 0
 
-        print("Use --init to create default config or --show to display current config")
+        logger.info("Use --init to create default config or --show to display current config")
         return 0
 
 

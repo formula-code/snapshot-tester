@@ -1,4 +1,7 @@
 """
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 Minimal test benchmarks to verify the snapshot testing tool works.
 """
 

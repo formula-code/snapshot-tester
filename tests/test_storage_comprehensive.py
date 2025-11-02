@@ -1,4 +1,7 @@
 """Comprehensive tests for SnapshotManager."""
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 import shutil
 import tempfile

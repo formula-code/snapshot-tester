@@ -1,4 +1,7 @@
 """Integration tests for end-to-end workflows."""
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 import shutil
 import tempfile
@@ -933,7 +936,7 @@ class TestShapelyRepo:
                 comparison = comparator.compare(result.return_value, loaded_value)
                 if not comparison.match:
                     all_passed = False
-                    print(f"Round {verify_round + 1} failed for {benchmark.name}: {comparison.error_message}")
+                    logger.info(f"Round {verify_round + 1} failed for {benchmark.name}: {comparison.error_message}")
 
             assert all_passed, f"Verification round {verify_round + 1} should pass (determinism check)"
 

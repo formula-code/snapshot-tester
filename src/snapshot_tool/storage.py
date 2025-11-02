@@ -7,12 +7,15 @@ with an organized directory structure.
 
 import hashlib
 import json
+import logging
 import os
 import pickle
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -194,10 +197,14 @@ class SnapshotManager:
     def _serialize_value(self, value: Any) -> Any:
         """Safely serialize a value, handling class instances and generators."""
         try:
-            # Try to pickle the value directly
-            pickle.dumps(value)
+            # Try to pickle AND unpickle the value to ensure it's truly serializable
+            # This catches objects that pickle fine but fail to unpickle (e.g., version mismatches)
+            pickled = pickle.dumps(value)
+            pickle.loads(pickled)  # Test round-trip
             return value
-        except (pickle.PicklingError, TypeError, AttributeError) as e:
+        except Exception as e:
+            # Catch all exceptions during pickling/unpickling
+            # Common issues: PicklingError, TypeError, AttributeError, ImportError, etc.
             # Check if it's a generator
             if hasattr(value, "__iter__") and hasattr(value, "__next__"):
                 # It's a generator - cannot be pickled
@@ -218,6 +225,18 @@ class SnapshotManager:
                 }
 
             # If pickling fails, try to create a serializable representation
+            # First, try to convert iterables to plain lists (for HomogeneousList, etc.)
+            if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
+                try:
+                    # Try to convert to a plain list and serialize elements
+                    plain_list = [self._serialize_value(item) for item in value]
+                    # Test if the list can be pickled
+                    pickle.dumps(plain_list)
+                    return plain_list
+                except Exception:
+                    # If list conversion fails, continue to other methods
+                    pass
+
             if hasattr(value, "__dict__"):
                 # For class instances, create a dict representation
                 # Safely serialize the __dict__ to avoid generator issues
@@ -231,16 +250,16 @@ class SnapshotManager:
                     "__class_name__": value.__class__.__name__,
                     "__module__": getattr(value.__class__, "__module__", ""),
                     "__dict__": serialized_dict,
+                    "__error__": str(e),
                 }
-            elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
-                # For iterables, try to serialize each element
-                try:
-                    return [self._serialize_value(item) for item in value]
-                except:
-                    return str(value)
             else:
                 # Fall back to string representation
-                return str(value)
+                return {
+                    "__unpicklable__": True,
+                    "__type__": type(value).__name__,
+                    "__str__": str(value),
+                    "__error__": str(e),
+                }
 
     def _deserialize_value(self, value: Any) -> Any:
         """Deserialize a value, handling class instances and generators."""
@@ -256,12 +275,18 @@ class SnapshotManager:
         return value
 
     def load_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
+        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...], class_name: str | None = None
     ) -> tuple[Any, SnapshotMetadata] | None:
         """Load a snapshot and its metadata."""
 
         param_hash = self._generate_param_hash(parameters)
-        snapshot_path = self.snapshot_dir / module_path / benchmark_name / f"{param_hash}.pkl"
+
+        # Use class name in path if provided
+        if class_name:
+            benchmark_dir = f"{class_name}.{benchmark_name}"
+        else:
+            benchmark_dir = benchmark_name
+        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
 
         if not snapshot_path.exists():
             return None
@@ -279,7 +304,7 @@ class SnapshotManager:
             return return_value, metadata
 
         except Exception as e:
-            print(f"Warning: Failed to load snapshot {snapshot_path}: {e}")
+            logger.warning(f"Failed to load snapshot {snapshot_path}: {e}")
             return None
 
     def is_failed_capture(
@@ -316,7 +341,7 @@ class SnapshotManager:
                 metadata = snapshot_data["metadata"]
                 snapshots.append((pkl_file, metadata))
             except Exception as e:
-                print(f"Warning: Failed to load snapshot {pkl_file}: {e}")
+                logger.warning(f"Failed to load snapshot {pkl_file}: {e}")
                 continue
 
         return snapshots

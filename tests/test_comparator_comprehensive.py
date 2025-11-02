@@ -1,4 +1,7 @@
 """Comprehensive tests for Comparator."""
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 import numpy as np
 import pytest

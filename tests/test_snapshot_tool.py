@@ -5,6 +5,10 @@ Test script for the snapshot testing tool.
 This script tests the tool with the provided astropy benchmark examples.
 """
 
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+
 import sys
 from pathlib import Path
 
@@ -13,7 +17,7 @@ from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, Comparator, Snaps
 
 def test_discovery():
     """Test benchmark discovery."""
-    print("Testing benchmark discovery...")
+    logger.info("Testing benchmark discovery...")
 
     benchmark_dir = Path(
         "/mnt/sdd1/jamesh/formulacode/diff-tester/examples/astropy-benchmarks/benchmarks"
@@ -22,19 +26,19 @@ def test_discovery():
     discovery = BenchmarkDiscovery(benchmark_dir)
     benchmarks = discovery.discover_all()
 
-    print(f"Found {len(benchmarks)} benchmarks:")
+    logger.info(f"Found {len(benchmarks)} benchmarks:")
     for benchmark in benchmarks:
-        print(f"  {benchmark.module_path}.{benchmark.name} ({benchmark.benchmark_type})")
+        logger.info(f"  {benchmark.module_path}.{benchmark.name} ({benchmark.benchmark_type})")
         if benchmark.params:
             param_combinations = discovery.generate_parameter_combinations(benchmark)
-            print(f"    Parameters: {len(param_combinations)} combinations")
+            logger.info(f"    Parameters: {len(param_combinations)} combinations")
 
     return benchmarks
 
 
 def test_runner():
     """Test benchmark runner."""
-    print("\nTesting benchmark runner...")
+    logger.info("\nTesting benchmark runner...")
 
     benchmark_dir = Path(
         "/mnt/sdd1/jamesh/formulacode/diff-tester/examples/astropy-benchmarks/benchmarks"
@@ -54,17 +58,17 @@ def test_runner():
             break
 
     if simple_benchmark:
-        print(f"Testing simple benchmark: {simple_benchmark.name}")
+        logger.info(f"Testing simple benchmark: {simple_benchmark.name}")
         result = runner.run_benchmark(simple_benchmark)
 
         if result:
-            print(f"  Captured return value: {type(result.return_value)}")
-            print(f"  Function: {result.function_name}")
-            print(f"  Module: {result.module_name}")
-            print(f"  Depth: {result.depth}")
-            print(f"  Success: {result.success}")
+            logger.info(f"  Captured return value: {type(result.return_value)}")
+            logger.info(f"  Function: {result.function_name}")
+            logger.info(f"  Module: {result.module_name}")
+            logger.info(f"  Depth: {result.depth}")
+            logger.info(f"  Success: {result.success}")
         else:
-            print("  Failed to capture return value")
+            logger.info("  Failed to capture return value")
 
     # Test with a parameterized benchmark
     param_benchmark = None
@@ -74,28 +78,28 @@ def test_runner():
             break
 
     if param_benchmark:
-        print(f"\nTesting parameterized benchmark: {param_benchmark.name}")
+        logger.info(f"\nTesting parameterized benchmark: {param_benchmark.name}")
         param_combinations = discovery.generate_parameter_combinations(param_benchmark)
 
         # Test with first parameter combination
         if param_combinations:
             params = param_combinations[0]
-            print(f"  Testing with params: {params}")
+            logger.info(f"  Testing with params: {params}")
             result = runner.run_benchmark(param_benchmark, params)
 
             if result:
-                print(f"    Captured return value: {type(result.return_value)}")
-                print(f"    Function: {result.function_name}")
-                print(f"    Module: {result.module_name}")
-                print(f"    Depth: {result.depth}")
-                print(f"    Success: {result.success}")
+                logger.info(f"    Captured return value: {type(result.return_value)}")
+                logger.info(f"    Function: {result.function_name}")
+                logger.info(f"    Module: {result.module_name}")
+                logger.info(f"    Depth: {result.depth}")
+                logger.info(f"    Success: {result.success}")
             else:
-                print("    Failed to capture return value")
+                logger.info("    Failed to capture return value")
 
 
 def test_storage():
     """Test snapshot storage."""
-    print("\nTesting snapshot storage...")
+    logger.info("\nTesting snapshot storage...")
 
     snapshot_dir = Path("/tmp/test_snapshots")
     storage = SnapshotManager(snapshot_dir)
@@ -110,7 +114,7 @@ def test_storage():
         return_value=test_data,
     )
 
-    print(f"Stored snapshot at: {snapshot_path}")
+    logger.info(f"Stored snapshot at: {snapshot_path}")
 
     # Test loading the snapshot
     loaded_data = storage.load_snapshot(
@@ -119,12 +123,12 @@ def test_storage():
 
     if loaded_data:
         return_value, metadata = loaded_data
-        print(f"Loaded return value: {return_value}")
-        print(f"Metadata: {metadata.benchmark_name}, {metadata.timestamp}")
+        logger.info(f"Loaded return value: {return_value}")
+        logger.info(f"Metadata: {metadata.benchmark_name}, {metadata.timestamp}")
 
     # Test listing snapshots
     snapshots = storage.list_snapshots()
-    print(f"Total snapshots: {len(snapshots)}")
+    logger.info(f"Total snapshots: {len(snapshots)}")
 
     # Clean up
     import shutil
@@ -135,7 +139,7 @@ def test_storage():
 
 def test_comparator():
     """Test comparison engine."""
-    print("\nTesting comparison engine...")
+    logger.info("\nTesting comparison engine...")
 
     comparator = Comparator()
 
@@ -146,28 +150,28 @@ def test_comparator():
     arr2 = np.array([1.000001, 2.000001, 3.000001])
 
     result = comparator.compare(arr1, arr2)
-    print(f"Array comparison: {result.match}")
+    logger.info(f"Array comparison: {result.match}")
     if not result.match:
-        print(f"  Error: {result.error_message}")
+        logger.info(f"  Error: {result.error_message}")
 
     # Test scalar comparison
     result = comparator.compare(1.0, 1.000001)
-    print(f"Scalar comparison: {result.match}")
+    logger.info(f"Scalar comparison: {result.match}")
 
     # Test exact match
     result = comparator.compare(42, 42)
-    print(f"Exact match: {result.match}")
+    logger.info(f"Exact match: {result.match}")
 
     # Test mismatch
     result = comparator.compare(1.0, 2.0)
-    print(f"Mismatch: {result.match}")
+    logger.info(f"Mismatch: {result.match}")
     if not result.match:
-        print(f"  Error: {result.error_message}")
+        logger.info(f"  Error: {result.error_message}")
 
 
 def main():
     """Run all tests."""
-    print("Testing snapshot testing tool...")
+    logger.info("Testing snapshot testing tool...")
 
     try:
         benchmarks = test_discovery()
@@ -175,10 +179,10 @@ def main():
         test_storage()
         test_comparator()
 
-        print("\nAll tests completed!")
+        logger.info("\nAll tests completed!")
 
     except Exception as e:
-        print(f"Test failed with error: {e}")
+        logger.info(f"Test failed with error: {e}")
         import traceback
 
         traceback.print_exc()

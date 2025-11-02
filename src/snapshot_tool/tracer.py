@@ -216,11 +216,10 @@ class ExecutionTracer:
         if not self._should_trace_frame(frame):
             return None
 
-        # Capture the FIRST meaningful return value
-        # This is more deterministic than depth-based capture
-        if self.deepest_call is None:
-            # Skip None returns and some common non-meaningful returns
-            if arg is not None and not self._is_meaningless_return(arg):
+        # Capture meaningful return values, preferring shallower calls (closer to benchmark)
+        # Update if this is a shallower call or if we haven't captured anything yet
+        if arg is not None and not self._is_meaningless_return(arg):
+            if self.deepest_call is None or self.current_depth <= self.deepest_call.depth:
                 self.deepest_call = TraceResult(
                     return_value=arg,
                     function_name=frame.f_code.co_name,
@@ -261,7 +260,8 @@ class ExecutionTracer:
         function_name = frame.f_code.co_name
 
         # Skip excluded modules (manual list)
-        if any(module_name.startswith(excluded) for excluded in self.excluded_modules):
+        # Check for exact match or proper module prefix (with dot separator)
+        if any(module_name == excluded or module_name.startswith(excluded + '.') for excluded in self.excluded_modules):
             return False
 
         # Skip all standard library modules using sys.stdlib_module_names (Python 3.10+)

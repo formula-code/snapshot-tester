@@ -6,10 +6,13 @@ functions, parameters, and setup methods.
 """
 
 import ast
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,7 +54,7 @@ class BenchmarkDiscovery:
                 benchmarks = self._discover_in_file(py_file)
                 self.discovered_benchmarks.extend(benchmarks)
             except Exception as e:
-                print(f"Warning: Failed to parse {py_file}: {e}")
+                logger.warning(f"Failed to parse {py_file}: {e}")
                 continue
 
         return self.discovered_benchmarks
@@ -86,7 +89,7 @@ class BenchmarkDiscovery:
                     benchmarks.extend(class_benchmarks)
 
         except Exception as e:
-            print(f"Error parsing {file_path}: {e}")
+            logger.error(f"Error parsing {file_path}: {e}")
 
         return benchmarks
 

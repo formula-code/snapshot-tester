@@ -216,3 +216,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 tests/.snapshots/
+**/.snapshots
+
+# Snapshot testing tool output
+summary.json

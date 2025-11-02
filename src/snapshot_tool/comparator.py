@@ -16,6 +16,7 @@ class ComparisonResult:
     """Result of comparing two values."""
 
     match: bool
+    skipped: bool = False  # True if comparison was skipped (e.g., generators, unpicklable values)
     tolerance_used: dict[str, float] | None = None
     error_message: str | None = None
     details: dict[str, Any] | None = None
@@ -45,13 +46,16 @@ class Comparator:
             # Handle serialized generators - skip comparison
             if isinstance(expected, dict) and expected.get("__generator__"):
                 return ComparisonResult(
-                    match=True, details="Skipped comparison for generator (cannot be pickled)"
+                    match=True,
+                    skipped=True,
+                    details="Skipped comparison for generator (cannot be pickled)"
                 )
 
             # Handle serialized callables (functions/closures) - skip comparison
             if isinstance(expected, dict) and expected.get("__callable__"):
                 return ComparisonResult(
                     match=True,
+                    skipped=True,
                     details="Skipped comparison for callable (cannot be pickled reliably)",
                 )
 
@@ -59,6 +63,7 @@ class Comparator:
             if isinstance(expected, dict) and expected.get("__unpicklable__"):
                 return ComparisonResult(
                     match=True,
+                    skipped=True,
                     details="Skipped comparison for unpicklable value (stored as placeholder)",
                 )
 
@@ -76,12 +81,14 @@ class Comparator:
                 )
 
             # Try different comparison strategies
+            # Note: _compare_objects must come before _compare_sequences because some objects
+            # like SkyCoord have sequence-like methods but should use their __eq__ method
             strategies = [
                 self._compare_numpy_arrays,
                 self._compare_scalars,
+                self._compare_objects,
                 self._compare_sequences,
                 self._compare_dicts,
-                self._compare_objects,
                 self._compare_fallback,
             ]
 
@@ -325,6 +332,11 @@ class Comparator:
                 error_message=f"Type mismatch: {actual_type.__name__} vs {expected_type.__name__}",
             )
 
+        # Skip lists/tuples that contain numpy arrays - let _compare_sequences handle them
+        if isinstance(actual, (list, tuple)) and len(actual) > 0:
+            if isinstance(actual[0], np.ndarray):
+                return None  # Let _compare_sequences handle this
+
         # Check if __eq__ is properly implemented (not just the default object.__eq__)
         has_custom_eq = False
         for cls in actual_type.__mro__:
@@ -357,6 +369,15 @@ class Comparator:
                     },
                     error_message=f"Skipped: __eq__ not implemented for {actual_type.__name__}",
                 )
+
+            # Handle cases where __eq__ returns an array (e.g., SkyCoord, pandas Series)
+            if isinstance(match, np.ndarray):
+                match = bool(match.all())
+            # Handle cases where __eq__ returns a list/tuple of arrays (e.g., lists of numpy arrays)
+            elif isinstance(match, (list, tuple)) and len(match) > 0:
+                # Check if it contains arrays (use len() to avoid evaluating the list as boolean)
+                if isinstance(match[0], np.ndarray):
+                    match = all(arr.all() if isinstance(arr, np.ndarray) else arr for arr in match)
 
             return ComparisonResult(
                 match=match,

@@ -7,16 +7,17 @@ parameter combinations, and global variable initialization.
 
 import importlib
 import importlib.util
-import random
+import logging
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from .discovery import BenchmarkDiscovery, BenchmarkInfo
+from .rng_patcher import RNGPatcher
 from .tracer import ExecutionTracer, TraceResult
+
+logger = logging.getLogger(__name__)
 
 
 class BenchmarkRunner:
@@ -29,6 +30,9 @@ class BenchmarkRunner:
         self.tracer = ExecutionTracer()
         self.seed = seed  # Deterministic seed for reproducibility
 
+        # Initialize RNG patcher for deterministic execution
+        self.rng_patcher = RNGPatcher(seed=seed)
+
         # Cache for loaded modules
         self._module_cache: dict[str, Any] = {}
 
@@ -37,17 +41,15 @@ class BenchmarkRunner:
             sys.path.insert(0, str(self.project_dir))
 
     def _reset_random_state(self):
-        """Reset random state to ensure deterministic benchmark execution."""
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        # Reset the global random state for any other libraries that might use it
-        try:
-            import torch
-            torch.manual_seed(self.seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(self.seed)
-        except ImportError:
-            pass
+        """
+        Reset random state to ensure deterministic benchmark execution.
+
+        This patches ALL random number generators (numpy legacy, numpy Generator API,
+        PyTorch, TensorFlow) to use deterministic seeds.
+        """
+        # Use the RNG patcher to ensure all RNGs are deterministic
+        # This handles both legacy and modern numpy RNG, plus PyTorch and TensorFlow
+        self.rng_patcher.patch_all()
 
     def _evaluate_params_at_runtime(self, benchmark: BenchmarkInfo, module) -> list[list[Any]]:
         """Evaluate params at runtime by accessing the class attribute."""
@@ -63,19 +65,19 @@ class BenchmarkRunner:
                 return None
 
             # Convert to the expected format
-            if isinstance(params, list):
-                if len(params) > 0 and isinstance(params[0], list):
-                    # Already in the correct format
-                    return params
+            if isinstance(params, (list, tuple)):
+                if len(params) > 0 and isinstance(params[0], (list, tuple)):
+                    # Already in the correct format - convert to list of lists
+                    return [list(p) if isinstance(p, tuple) else p for p in params]
                 else:
                     # Single parameter list
-                    return [params]
+                    return [list(params) if isinstance(params, tuple) else params]
             else:
                 # Single value
                 return [[params]]
 
         except Exception as e:
-            print(f"Warning: Failed to evaluate params at runtime for {benchmark.name}: {e}")
+            logger.warning(f"Failed to evaluate params at runtime for {benchmark.name}: {e}")
             return None
 
     def run_benchmark(
@@ -106,7 +108,7 @@ class BenchmarkRunner:
 
         except Exception as e:
             error_type = self._categorize_error(e)
-            print(f"Error running benchmark {benchmark.name}: {error_type} - {e}")
+            logger.error(f"Error running benchmark {benchmark.name}: {error_type} - {e}")
             if error_type == "parameter_error":
                 # Don't print full traceback for parameter errors
                 pass
@@ -137,7 +139,7 @@ class BenchmarkRunner:
         results = {}
 
         for benchmark in benchmarks:
-            print(f"Running benchmark: {benchmark.module_path}.{benchmark.name}")
+            logger.info(f"Running benchmark: {benchmark.module_path}.{benchmark.name}")
 
             # Handle runtime evaluation of params
             if benchmark.needs_runtime_eval:
@@ -149,10 +151,10 @@ class BenchmarkRunner:
                         benchmark.params = runtime_params
                         benchmark.needs_runtime_eval = False
                     else:
-                        print("  Failed to evaluate params at runtime, skipping")
+                        logger.warning("  Failed to evaluate params at runtime, skipping")
                         continue
                 except Exception as e:
-                    print(f"  Failed to load module for runtime evaluation: {e}")
+                    logger.error(f"  Failed to load module for runtime evaluation: {e}")
                     continue
 
             if benchmark.params:
@@ -161,7 +163,7 @@ class BenchmarkRunner:
                 benchmark_results = []
 
                 for params in param_combinations:
-                    print(f"  Parameters: {params}")
+                    logger.info(f"  Parameters: {params}")
                     result = self.run_benchmark(benchmark, params)
                     if result:
                         benchmark_results.append(result)
@@ -298,7 +300,7 @@ class BenchmarkRunner:
         except Exception as e:
             # Stop tracing even if benchmark failed
             self.tracer.stop_tracing()
-            print(f"Benchmark {benchmark.name} failed: {e}")
+            logger.error(f"Benchmark {benchmark.name} failed: {e}")
             traceback.print_exc()
             return TraceResult(
                 return_value=None,
@@ -345,29 +347,29 @@ class BenchmarkRunner:
                                 param_dict = dict(zip(benchmark.param_names, parameters))
                                 setup_method(**param_dict)
                             except TypeError:
-                                print(
-                                    f"Warning: Setup method failed with parameters {parameters}: {e}"
+                                logger.warning(
+                                    f"Setup method failed with parameters {parameters}: {e}"
                                 )
                                 try:
                                     setup_method()
                                 except TypeError:
-                                    print("Warning: Setup method also failed without parameters")
+                                    logger.warning("Setup method also failed without parameters")
                     else:
                         # No param_names - pass parameters as positional arguments
                         try:
                             setup_method(*parameters)
                         except TypeError as e:
-                            print(f"Warning: Setup method failed with parameters {parameters}: {e}")
+                            logger.warning(f"Setup method failed with parameters {parameters}: {e}")
                             try:
                                 setup_method()
                             except TypeError:
-                                print("Warning: Setup method also failed without parameters")
+                                logger.warning("Setup method also failed without parameters")
                 else:
                     # Call setup without parameters
                     try:
                         setup_method()
                     except TypeError as e:
-                        print(f"Warning: Setup method failed: {e}")
+                        logger.warning(f"Setup method failed: {e}")
 
         # Start tracing
         self.tracer.start_tracing()
@@ -393,7 +395,7 @@ class BenchmarkRunner:
         except Exception as e:
             # Stop tracing even if benchmark failed
             self.tracer.stop_tracing()
-            print(f"Benchmark {benchmark.name} failed: {e}")
+            logger.error(f"Benchmark {benchmark.name} failed: {e}")
             traceback.print_exc()
             return TraceResult(
                 return_value=None,

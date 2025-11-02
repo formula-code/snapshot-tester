@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 """
 Test script to verify class instance capture and failed capture handling.
 """
@@ -10,7 +13,7 @@ from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager
 
 def test_class_instance_capture():
     """Test that class instances are properly captured."""
-    print("Testing class instance capture...")
+    logger.info("Testing class instance capture...")
 
     # Initialize components
     benchmark_dir = Path(__file__).parent
@@ -21,23 +24,23 @@ def test_class_instance_capture():
     discovery = BenchmarkDiscovery(benchmark_dir)
     benchmarks = discovery.discover_all()
 
-    print(f"Found {len(benchmarks)} benchmarks")
+    logger.info(f"Found {len(benchmarks)} benchmarks")
 
     for benchmark in benchmarks:
-        print(f"\nTesting benchmark: {benchmark.name}")
+        logger.info(f"\nTesting benchmark: {benchmark.name}")
 
         # Run the benchmark
         result = runner.run_benchmark(benchmark)
 
         if result and result.success:
-            print("  ✓ Benchmark executed successfully")
-            print(f"  Return value type: {type(result.return_value)}")
-            print(f"  Return value: {result.return_value}")
+            logger.info("  ✓ Benchmark executed successfully")
+            logger.info(f"  Return value type: {type(result.return_value)}")
+            logger.info(f"  Return value: {result.return_value}")
 
             # Check if it's a class instance
             if hasattr(result.return_value, "__class__"):
-                print(f"  Class name: {result.return_value.__class__.__name__}")
-                print(f"  Module: {result.return_value.__class__.__module__}")
+                logger.info(f"  Class name: {result.return_value.__class__.__name__}")
+                logger.info(f"  Module: {result.return_value.__class__.__module__}")
 
             # Store the snapshot
             storage.store_snapshot(
@@ -47,14 +50,14 @@ def test_class_instance_capture():
                 param_names=None,
                 return_value=result.return_value,
             )
-            print("  ✓ Snapshot stored successfully")
+            logger.info("  ✓ Snapshot stored successfully")
 
         else:
-            print("  ✗ Benchmark failed")
+            logger.info("  ✗ Benchmark failed")
             if result and result.error:
-                print(f"  Error: {result.error}")
+                logger.info(f"  Error: {result.error}")
 
-    print("\nTesting snapshot loading...")
+    logger.info("\nTesting snapshot loading...")
 
     # Test loading snapshots
     for benchmark in benchmarks:
@@ -64,16 +67,16 @@ def test_class_instance_capture():
 
         if snapshot_data:
             return_value, metadata = snapshot_data
-            print(f"  ✓ Loaded snapshot for {benchmark.name}")
-            print(f"    Type: {type(return_value)}")
-            print(f"    Value: {return_value}")
+            logger.info(f"  ✓ Loaded snapshot for {benchmark.name}")
+            logger.info(f"    Type: {type(return_value)}")
+            logger.info(f"    Value: {return_value}")
         else:
-            print(f"  ✗ Failed to load snapshot for {benchmark.name}")
+            logger.info(f"  ✗ Failed to load snapshot for {benchmark.name}")
 
 
 def test_failed_capture():
     """Test failed capture handling."""
-    print("\n\nTesting failed capture handling...")
+    logger.info("\n\nTesting failed capture handling...")
 
     # Create a benchmark that will fail
     benchmark_code = '''
@@ -105,14 +108,14 @@ def time_failing_benchmark():
                 break
 
         if failing_benchmark:
-            print(f"Found failing benchmark: {failing_benchmark.name}")
+            logger.info(f"Found failing benchmark: {failing_benchmark.name}")
 
             # Run the benchmark (should fail)
             result = runner.run_benchmark(failing_benchmark)
 
             if result and not result.success:
-                print("  ✓ Benchmark failed as expected")
-                print(f"  Error: {result.error}")
+                logger.info("  ✓ Benchmark failed as expected")
+                logger.info(f"  Error: {result.error}")
 
                 # Store failed capture
                 storage.store_failed_capture(
@@ -122,17 +125,17 @@ def time_failing_benchmark():
                     param_names=None,
                     failure_reason=str(result.error),
                 )
-                print("  ✓ Failed capture marker stored")
+                logger.info("  ✓ Failed capture marker stored")
 
                 # Test that we can detect failed captures
                 is_failed = storage.is_failed_capture(
                     failing_benchmark.name, failing_benchmark.module_path, ()
                 )
-                print(f"  ✓ Failed capture detection: {is_failed}")
+                logger.info(f"  ✓ Failed capture detection: {is_failed}")
             else:
-                print("  ✗ Benchmark should have failed but didn't")
+                logger.info("  ✗ Benchmark should have failed but didn't")
         else:
-            print("  ✗ Failed benchmark not found")
+            logger.info("  ✗ Failed benchmark not found")
 
     finally:
         # Clean up
@@ -143,4 +146,4 @@ def time_failing_benchmark():
 if __name__ == "__main__":
     test_class_instance_capture()
     test_failed_capture()
-    print("\n✓ All tests completed!")
+    logger.info("\n✓ All tests completed!")
