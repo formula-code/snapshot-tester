@@ -4,6 +4,7 @@ Configuration management for snapshot testing.
 This module handles loading and managing configuration settings
 for the snapshot testing tool.
 """
+from __future__ import annotations
 
 import json
 import logging

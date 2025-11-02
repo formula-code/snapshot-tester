@@ -4,6 +4,7 @@ Benchmark discovery engine for ASV benchmarks.
 This module parses ASV benchmark files to discover benchmark classes,
 functions, parameters, and setup methods.
 """
+from __future__ import annotations
 
 import ast
 import logging

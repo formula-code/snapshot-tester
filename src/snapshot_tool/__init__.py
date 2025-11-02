@@ -4,6 +4,7 @@ Snapshot testing tool for ASV benchmarks.
 This package provides tools to capture and compare function return values
 from benchmarks to verify correctness after optimizations.
 """
+from __future__ import annotations
 
 import logging
 import sys

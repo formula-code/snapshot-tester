@@ -13,6 +13,7 @@ The patcher handles:
 - PyTorch random number generation (if installed)
 - TensorFlow random number generation (if installed)
 """
+from __future__ import annotations
 
 import logging
 import sys
@@ -39,7 +40,7 @@ class RNGPatcher:
     def patch_all(self):
         """Apply all RNG patches to make execution deterministic."""
         if self._patched:
-            logger.warning("RNG patcher already applied, re-seeding RNGs")
+            logger.debug("RNG patcher already applied, re-seeding RNGs")
             # Re-seed even if already patched
             self._patch_python_random()
             self._patch_numpy_legacy()

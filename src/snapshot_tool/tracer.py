@@ -4,6 +4,7 @@ Execution tracer for capturing function return values.
 This module implements a tracing mechanism using sys.settrace to capture
 the deepest function call's return value during benchmark execution.
 """
+from __future__ import annotations
 
 import sys
 import types

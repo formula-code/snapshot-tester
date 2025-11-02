@@ -4,6 +4,7 @@ Snapshot storage and management system.
 This module handles storing and retrieving snapshots using pickle files
 with an organized directory structure.
 """
+from __future__ import annotations
 
 import hashlib
 import json

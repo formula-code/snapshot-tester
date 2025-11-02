@@ -4,6 +4,7 @@ Benchmark runner for executing ASV benchmarks with tracing.
 This module executes benchmarks with tracing enabled and handles setup methods,
 parameter combinations, and global variable initialization.
 """
+from __future__ import annotations
 
 import importlib
 import importlib.util
@@ -205,6 +206,19 @@ class BenchmarkRunner:
         if not module_file.exists():
             raise FileNotFoundError(f"Module file not found: {module_file}")
 
+        # Ensure parent packages exist in sys.modules to support relative imports
+        # in benchmark files (e.g., `from .pandas_vb_common import setup`).
+        import types
+        parts = module_path.split('.')
+        for i in range(1, len(parts)):
+            pkg_name = '.'.join(parts[:i])
+            if pkg_name not in sys.modules:
+                pkg = types.ModuleType(pkg_name)
+                # Mark as a package by setting __path__ to the directory
+                pkg_dir = self.benchmark_dir / '/'.join(parts[:i])
+                pkg.__path__ = [str(pkg_dir)]
+                sys.modules[pkg_name] = pkg
+
         # Load the module
         spec = importlib.util.spec_from_file_location(module_path, module_file)
         if spec is None or spec.loader is None:
@@ -325,6 +339,48 @@ class BenchmarkRunner:
         benchmark_method = getattr(benchmark_class, benchmark.name, None)
         if benchmark_method is None:
             raise AttributeError(f"Benchmark method {benchmark.name} not found")
+
+        # Attempt to rewrite the benchmark method so that its final expression
+        # becomes an explicit return statement. This lets us capture the value
+        # even if inner calls execute in C/Cython (unseen by sys.settrace).
+        # Falls back silently if rewriting is not possible.
+        try:
+            import ast
+            import inspect
+            import textwrap
+
+            try:
+                src = inspect.getsource(benchmark_method)
+            except (OSError, TypeError):
+                src = None
+
+            if src:
+                dedented = textwrap.dedent(src)
+                tree = ast.parse(dedented)
+                if tree.body and isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    func_def = tree.body[0]
+                    # Skip empty bodies
+                    if func_def.body:
+                        last_stmt = func_def.body[-1]
+                        if isinstance(last_stmt, ast.Expr):
+                            # Replace tail expression with return of that expression
+                            func_def.body[-1] = ast.Return(value=last_stmt.value)
+                            ast.fix_missing_locations(tree)
+                            code = compile(
+                                tree,
+                                f"<modified_{benchmark.class_name}.{benchmark.name}>",
+                                "exec",
+                            )
+                            namespace = module.__dict__.copy()
+                            exec(code, namespace)
+                            new_func = namespace.get(benchmark.name)
+                            if new_func is not None:
+                                setattr(benchmark_class, benchmark.name, new_func)
+                                # Refresh local reference to the possibly replaced method
+                                benchmark_method = getattr(benchmark_class, benchmark.name)
+        except Exception:
+            # If anything goes wrong, ignore and continue with original method.
+            pass
 
         # Instantiate the class
         instance = benchmark_class()

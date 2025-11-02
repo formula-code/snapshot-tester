@@ -4,6 +4,7 @@ Command-line interface for snapshot testing.
 This module provides CLI commands for capturing and verifying snapshots
 of ASV benchmark outputs.
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -184,9 +185,13 @@ class SnapshotCLI:
                             logger.info(f"  Captured with params: {params}")
                     else:
                         # Store failed capture marker
-                        failure_reason = (
-                            str(result.error) if result and result.error else "Unknown error"
-                        )
+                        if result and result.error:
+                            error_type = type(result.error).__name__
+                            error_msg = str(result.error)
+                            failure_reason = f"{error_type}: {error_msg}" if error_msg else error_type
+                        else:
+                            failure_reason = "Unknown error (no exception details)"
+
                         storage.store_failed_capture(
                             benchmark_name=benchmark.name,
                             module_path=benchmark.module_path,
@@ -216,9 +221,13 @@ class SnapshotCLI:
                     captured_count += 1
                 else:
                     # Store failed capture marker
-                    failure_reason = (
-                        str(result.error) if result and result.error else "Unknown error"
-                    )
+                    if result and result.error:
+                        error_type = type(result.error).__name__
+                        error_msg = str(result.error)
+                        failure_reason = f"{error_type}: {error_msg}" if error_msg else error_type
+                    else:
+                        failure_reason = "Unknown error (no exception details)"
+
                     storage.store_failed_capture(
                         benchmark_name=benchmark.name,
                         module_path=benchmark.module_path,

@@ -4,6 +4,7 @@ Comparison engine for snapshot testing.
 This module compares captured outputs with stored snapshots using
 numpy.allclose for numerical data and other strategies for different types.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
