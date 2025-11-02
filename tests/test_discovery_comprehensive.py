@@ -1,10 +1,12 @@
 """Comprehensive tests for BenchmarkDiscovery."""
 
-import pytest
-from pathlib import Path
-import tempfile
 import shutil
-from snapshot_tool.discovery import BenchmarkDiscovery, BenchmarkInfo
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from snapshot_tool.discovery import BenchmarkDiscovery
 
 
 @pytest.fixture

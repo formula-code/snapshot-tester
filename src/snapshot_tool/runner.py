@@ -5,34 +5,51 @@ This module executes benchmarks with tracing enabled and handles setup methods,
 parameter combinations, and global variable initialization.
 """
 
-import sys
-import importlib.util
 import importlib
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+import importlib.util
+import random
+import sys
 import traceback
+from pathlib import Path
+from typing import Any
 
-from .discovery import BenchmarkInfo, BenchmarkDiscovery
+import numpy as np
+
+from .discovery import BenchmarkDiscovery, BenchmarkInfo
 from .tracer import ExecutionTracer, TraceResult
 
 
 class BenchmarkRunner:
     """Executes ASV benchmarks with tracing enabled."""
 
-    def __init__(self, benchmark_dir: Path, project_dir: Optional[Path] = None):
+    def __init__(self, benchmark_dir: Path, project_dir: Path | None = None, seed: int = 42):
         self.benchmark_dir = Path(benchmark_dir)
         self.project_dir = project_dir or benchmark_dir.parent
         self.discovery = BenchmarkDiscovery(self.benchmark_dir)
         self.tracer = ExecutionTracer()
+        self.seed = seed  # Deterministic seed for reproducibility
 
         # Cache for loaded modules
-        self._module_cache: Dict[str, Any] = {}
+        self._module_cache: dict[str, Any] = {}
 
         # Add project directory to Python path for imports
         if str(self.project_dir) not in sys.path:
             sys.path.insert(0, str(self.project_dir))
 
-    def _evaluate_params_at_runtime(self, benchmark: BenchmarkInfo, module) -> List[List[Any]]:
+    def _reset_random_state(self):
+        """Reset random state to ensure deterministic benchmark execution."""
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        # Reset the global random state for any other libraries that might use it
+        try:
+            import torch
+            torch.manual_seed(self.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.seed)
+        except ImportError:
+            pass
+
+    def _evaluate_params_at_runtime(self, benchmark: BenchmarkInfo, module) -> list[list[Any]]:
         """Evaluate params at runtime by accessing the class attribute."""
         if not benchmark.needs_runtime_eval or not benchmark.class_name:
             return benchmark.params
@@ -62,11 +79,14 @@ class BenchmarkRunner:
             return None
 
     def run_benchmark(
-        self, benchmark: BenchmarkInfo, parameters: Optional[Tuple[Any, ...]] = None
-    ) -> Optional[TraceResult]:
+        self, benchmark: BenchmarkInfo, parameters: tuple[Any, ...] | None = None
+    ) -> TraceResult | None:
         """Run a single benchmark with tracing."""
 
         try:
+            # Reset random state before each benchmark run for determinism
+            self._reset_random_state()
+
             # Load the benchmark module
             module = self._load_module(benchmark.module_path)
 
@@ -104,8 +124,8 @@ class BenchmarkRunner:
             )
 
     def run_all_benchmarks(
-        self, filter_pattern: Optional[str] = None
-    ) -> Dict[str, List[TraceResult]]:
+        self, filter_pattern: str | None = None
+    ) -> dict[str, list[TraceResult]]:
         """Run all discovered benchmarks."""
 
         # Discover benchmarks
@@ -129,7 +149,7 @@ class BenchmarkRunner:
                         benchmark.params = runtime_params
                         benchmark.needs_runtime_eval = False
                     else:
-                        print(f"  Failed to evaluate params at runtime, skipping")
+                        print("  Failed to evaluate params at runtime, skipping")
                         continue
                 except Exception as e:
                     print(f"  Failed to load module for runtime evaluation: {e}")
@@ -155,7 +175,7 @@ class BenchmarkRunner:
 
         return results
 
-    def get_param_combinations(self, benchmark: BenchmarkInfo) -> List[Tuple[Any, ...]]:
+    def get_param_combinations(self, benchmark: BenchmarkInfo) -> list[tuple[Any, ...]]:
         """Return parameter combinations, evaluating runtime params if needed."""
         # Ensure params are evaluated if needed
         if benchmark.needs_runtime_eval:
@@ -198,7 +218,7 @@ class BenchmarkRunner:
 
     def _run_function_benchmark(
         self, module: Any, benchmark: BenchmarkInfo
-    ) -> Optional[TraceResult]:
+    ) -> TraceResult | None:
         """Run a function-level benchmark."""
 
         # Get the benchmark function
@@ -263,7 +283,7 @@ class BenchmarkRunner:
                         self.tracer.stop_tracing()
                         return result
 
-            except Exception as ast_error:
+            except Exception:
                 # Fall back to original execution
                 pass
 
@@ -290,8 +310,8 @@ class BenchmarkRunner:
             )
 
     def _run_method_benchmark(
-        self, module: Any, benchmark: BenchmarkInfo, parameters: Optional[Tuple[Any, ...]] = None
-    ) -> Optional[TraceResult]:
+        self, module: Any, benchmark: BenchmarkInfo, parameters: tuple[Any, ...] | None = None
+    ) -> TraceResult | None:
         """Run a method-level benchmark."""
 
         # Get the benchmark class
@@ -309,6 +329,9 @@ class BenchmarkRunner:
 
         # Run setup if it exists
         if benchmark.has_setup and benchmark.setup_method:
+            # Reset random state before setup to ensure determinism
+            self._reset_random_state()
+
             setup_method = getattr(instance, benchmark.setup_method, None)
             if setup_method:
                 if parameters:
@@ -328,7 +351,7 @@ class BenchmarkRunner:
                                 try:
                                     setup_method()
                                 except TypeError:
-                                    print(f"Warning: Setup method also failed without parameters")
+                                    print("Warning: Setup method also failed without parameters")
                     else:
                         # No param_names - pass parameters as positional arguments
                         try:
@@ -338,7 +361,7 @@ class BenchmarkRunner:
                             try:
                                 setup_method()
                             except TypeError:
-                                print(f"Warning: Setup method also failed without parameters")
+                                print("Warning: Setup method also failed without parameters")
                 else:
                     # Call setup without parameters
                     try:
@@ -381,15 +404,15 @@ class BenchmarkRunner:
                 error=e,
             )
 
-    def get_benchmark_info(self, benchmark_name: str) -> Optional[BenchmarkInfo]:
+    def get_benchmark_info(self, benchmark_name: str) -> BenchmarkInfo | None:
         """Get information about a specific benchmark."""
         return self.discovery.get_benchmark_by_name(benchmark_name)
 
-    def list_benchmarks(self) -> List[BenchmarkInfo]:
+    def list_benchmarks(self) -> list[BenchmarkInfo]:
         """List all discovered benchmarks."""
         return self.discovery.discover_all()
 
-    def get_module_benchmarks(self, module_path: str) -> List[BenchmarkInfo]:
+    def get_module_benchmarks(self, module_path: str) -> list[BenchmarkInfo]:
         """Get all benchmarks from a specific module."""
         return self.discovery.get_benchmarks_by_module(module_path)
 
@@ -397,7 +420,7 @@ class BenchmarkRunner:
         """Clear the module cache."""
         self._module_cache.clear()
 
-    def get_trace_stats(self) -> Dict[str, Any]:
+    def get_trace_stats(self) -> dict[str, Any]:
         """Get tracing statistics."""
         return self.tracer.get_trace_stats()
 

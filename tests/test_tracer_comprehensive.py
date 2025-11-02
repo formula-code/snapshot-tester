@@ -1,9 +1,8 @@
 """Comprehensive tests for ExecutionTracer."""
 
-import pytest
-import sys
 import numpy as np
-from snapshot_tool.tracer import ExecutionTracer, TraceResult
+
+from snapshot_tool.tracer import ExecutionTracer
 
 
 class TestBasicTracing:
@@ -455,7 +454,7 @@ class TestComplexScenarios:
         """Test tracing with context managers."""
         def uses_context_manager():
             result = []
-            with open(__file__, 'r') as f:
+            with open(__file__) as f:
                 # Just check we can read
                 result.append(f.readline())
             return len(result)

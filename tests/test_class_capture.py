@@ -3,7 +3,6 @@
 Test script to verify class instance capture and failed capture handling.
 """
 
-import sys
 from pathlib import Path
 
 from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager
@@ -31,7 +30,7 @@ def test_class_instance_capture():
         result = runner.run_benchmark(benchmark)
 
         if result and result.success:
-            print(f"  ✓ Benchmark executed successfully")
+            print("  ✓ Benchmark executed successfully")
             print(f"  Return value type: {type(result.return_value)}")
             print(f"  Return value: {result.return_value}")
 
@@ -48,10 +47,10 @@ def test_class_instance_capture():
                 param_names=None,
                 return_value=result.return_value,
             )
-            print(f"  ✓ Snapshot stored successfully")
+            print("  ✓ Snapshot stored successfully")
 
         else:
-            print(f"  ✗ Benchmark failed")
+            print("  ✗ Benchmark failed")
             if result and result.error:
                 print(f"  Error: {result.error}")
 
@@ -112,7 +111,7 @@ def time_failing_benchmark():
             result = runner.run_benchmark(failing_benchmark)
 
             if result and not result.success:
-                print(f"  ✓ Benchmark failed as expected")
+                print("  ✓ Benchmark failed as expected")
                 print(f"  Error: {result.error}")
 
                 # Store failed capture
@@ -123,7 +122,7 @@ def time_failing_benchmark():
                     param_names=None,
                     failure_reason=str(result.error),
                 )
-                print(f"  ✓ Failed capture marker stored")
+                print("  ✓ Failed capture marker stored")
 
                 # Test that we can detect failed captures
                 is_failed = storage.is_failed_capture(
@@ -131,9 +130,9 @@ def time_failing_benchmark():
                 )
                 print(f"  ✓ Failed capture detection: {is_failed}")
             else:
-                print(f"  ✗ Benchmark should have failed but didn't")
+                print("  ✗ Benchmark should have failed but didn't")
         else:
-            print(f"  ✗ Failed benchmark not found")
+            print("  ✗ Failed benchmark not found")
 
     finally:
         # Clean up

@@ -2,10 +2,11 @@
 Pytest configuration and shared fixtures for snapshot_tool tests.
 """
 
-import pytest
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture

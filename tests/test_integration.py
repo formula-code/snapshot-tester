@@ -1,16 +1,19 @@
 """Integration tests for end-to-end workflows."""
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+
 from snapshot_tool import (
     BenchmarkDiscovery,
     BenchmarkRunner,
-    SnapshotManager,
     Comparator,
+    SnapshotManager,
 )
+from snapshot_tool.comparator import ComparisonConfig
 
 
 @pytest.fixture
@@ -282,7 +285,8 @@ def time_tolerance():
         )
 
         # Should pass with default tolerance
-        comparator = Comparator(rtol=1e-5, atol=1e-7)
+        config = ComparisonConfig(rtol=1e-5, atol=1e-7)
+        comparator = Comparator(config)
         comparison = comparator.compare(new_value, loaded_value)
         assert comparison.match is True
 
@@ -670,3 +674,365 @@ class ParamBench:
                     verify_count += 1
 
         assert verify_count == 3
+
+
+class TestShapelyRepo:
+    """Integration tests using the real shapely repository."""
+
+    @pytest.fixture
+    def shapely_workspace(self):
+        """Set up workspace for shapely benchmarks."""
+        # Use the shapely benchmarks (isolated from source to avoid import conflicts)
+        benchmark_dir = Path(__file__).parent / "test_repos" / "shapely_benchmarks"
+
+        # Create a temporary snapshot directory
+        temp_dir = tempfile.mkdtemp()
+        snapshot_dir = Path(temp_dir) / ".snapshots"
+        snapshot_dir.mkdir()
+
+        yield {
+            'benchmarks': benchmark_dir,
+            'snapshots': snapshot_dir
+        }
+
+        # Cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_shapely_benchmark_discovery(self, shapely_workspace):
+        """Test that we can discover shapely benchmarks."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Shapely has multiple benchmark classes
+        assert len(benchmarks) > 0
+
+        # Check we found some expected benchmarks
+        benchmark_names = {b.name for b in benchmarks}
+
+        # These are classes from the shapely benchmarks
+        expected_classes = {'PointPolygonTimeSuite', 'IOSuite', 'ConstructorsSuite'}
+        found_classes = {b.class_name for b in benchmarks if b.class_name}
+
+        # At least some of these should be found
+        assert len(expected_classes.intersection(found_classes)) > 0
+
+    def test_shapely_capture_and_verify_subset(self, shapely_workspace):
+        """Test capturing and verifying a subset of shapely benchmarks."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Filter to a small, fast benchmark for testing
+        # ConstructorsSuite.time_point is a simple microbenchmark
+        test_benchmark = None
+        for b in benchmarks:
+            if b.class_name == 'ConstructorsSuite' and b.name == 'time_point':
+                test_benchmark = b
+                break
+
+        if test_benchmark is None:
+            pytest.skip("Could not find ConstructorsSuite.time_point benchmark")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        storage = SnapshotManager(shapely_workspace['snapshots'])
+
+        # Capture the benchmark
+        result = runner.run_benchmark(test_benchmark)
+
+        # The benchmark should run successfully
+        assert result.success is True
+        assert result.return_value is not None
+
+        # Store the snapshot
+        storage.store_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=(),
+            param_names=None,
+            return_value=result.return_value
+        )
+
+        # Verify the snapshot
+        result2 = runner.run_benchmark(test_benchmark)
+        assert result2.success is True
+
+        loaded_value, _ = storage.load_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=()
+        )
+
+        comparator = Comparator()
+        comparison = comparator.compare(result2.return_value, loaded_value)
+        assert comparison.match is True
+
+    def test_shapely_determinism_multiple_verifies(self, shapely_workspace):
+        """Test that verification is deterministic - running verify twice should always pass."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Find a simple benchmark to test
+        test_benchmark = None
+        for b in benchmarks:
+            if b.class_name == 'ConstructorsSuite' and b.name == 'time_point':
+                test_benchmark = b
+                break
+
+        if test_benchmark is None:
+            pytest.skip("Could not find ConstructorsSuite.time_point benchmark")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        storage = SnapshotManager(shapely_workspace['snapshots'])
+        comparator = Comparator()
+
+        # Initial capture
+        capture_result = runner.run_benchmark(test_benchmark)
+        assert capture_result.success is True
+
+        storage.store_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=(),
+            param_names=None,
+            return_value=capture_result.return_value
+        )
+
+        # First verification
+        verify1_result = runner.run_benchmark(test_benchmark)
+        assert verify1_result.success is True
+
+        loaded_value1, _ = storage.load_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=()
+        )
+
+        comparison1 = comparator.compare(verify1_result.return_value, loaded_value1)
+        assert comparison1.match is True, "First verification should pass"
+
+        # Second verification (testing determinism)
+        verify2_result = runner.run_benchmark(test_benchmark)
+        assert verify2_result.success is True
+
+        loaded_value2, _ = storage.load_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=()
+        )
+
+        comparison2 = comparator.compare(verify2_result.return_value, loaded_value2)
+        assert comparison2.match is True, "Second verification should pass (determinism check)"
+
+        # Third verification for good measure
+        verify3_result = runner.run_benchmark(test_benchmark)
+        assert verify3_result.success is True
+
+        loaded_value3, _ = storage.load_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=()
+        )
+
+        comparison3 = comparator.compare(verify3_result.return_value, loaded_value3)
+        assert comparison3.match is True, "Third verification should pass (determinism check)"
+
+    def test_shapely_with_setup_method(self, shapely_workspace):
+        """Test a shapely benchmark that has a setup method - uses time_distance which returns numpy arrays."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Find PointPolygonTimeSuite.time_distance which has setup and returns numpy array
+        test_benchmark = None
+        for b in benchmarks:
+            if b.class_name == 'PointPolygonTimeSuite' and b.name == 'time_distance':
+                test_benchmark = b
+                break
+
+        if test_benchmark is None:
+            pytest.skip("Could not find PointPolygonTimeSuite.time_distance benchmark")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        storage = SnapshotManager(shapely_workspace['snapshots'])
+
+        # Run the benchmark (it should handle setup internally)
+        result = runner.run_benchmark(test_benchmark)
+
+        # Should succeed and return a value
+        assert result.success is True
+        assert result.return_value is not None
+
+        # Store and verify
+        storage.store_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=(),
+            param_names=None,
+            return_value=result.return_value
+        )
+
+        # Verify determinism - important for benchmarks with random data in setup
+        result2 = runner.run_benchmark(test_benchmark)
+        assert result2.success is True
+
+        loaded_value, _ = storage.load_snapshot(
+            benchmark_name=test_benchmark.name,
+            module_path=test_benchmark.module_path,
+            parameters=()
+        )
+
+        comparator = Comparator()
+        comparison = comparator.compare(result2.return_value, loaded_value)
+        assert comparison.match is True
+
+    def test_shapely_full_capture_and_verify_cycle(self, shapely_workspace):
+        """Full integration test: capture shapely benchmarks and verify determinism."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Filter to fast benchmarks
+        fast_benchmarks = [
+            b for b in benchmarks
+            if b.class_name == 'ConstructorsSuite' and b.name in ['time_point', 'time_linestring_from_numpy']
+        ]
+
+        if len(fast_benchmarks) == 0:
+            pytest.skip("Could not find ConstructorsSuite benchmarks")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        storage = SnapshotManager(shapely_workspace['snapshots'])
+        comparator = Comparator()
+
+        # Phase 1: Capture
+        captured_benchmarks = []
+        for benchmark in fast_benchmarks:
+            result = runner.run_benchmark(benchmark)
+            if result.success:
+                storage.store_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=(),
+                    param_names=None,
+                    return_value=result.return_value
+                )
+                captured_benchmarks.append(benchmark)
+
+        assert len(captured_benchmarks) > 0, "Should capture at least one benchmark"
+
+        # Phase 2: Verify determinism - run verify 3 times
+        for verify_round in range(3):
+            all_passed = True
+            for benchmark in captured_benchmarks:
+                result = runner.run_benchmark(benchmark)
+                assert result.success, f"Benchmark {benchmark.name} failed on verify round {verify_round + 1}"
+
+                loaded_value, _ = storage.load_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=()
+                )
+
+                comparison = comparator.compare(result.return_value, loaded_value)
+                if not comparison.match:
+                    all_passed = False
+                    print(f"Round {verify_round + 1} failed for {benchmark.name}: {comparison.error_message}")
+
+            assert all_passed, f"Verification round {verify_round + 1} should pass (determinism check)"
+
+    def test_shapely_with_random_data_determinism(self, shapely_workspace):
+        """Test that benchmarks using np.random produce deterministic results with seed management."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        # Find PointPolygonTimeSuite.time_distance which uses random data
+        test_benchmark = None
+        for b in benchmarks:
+            if b.class_name == 'PointPolygonTimeSuite' and b.name == 'time_distance':
+                test_benchmark = b
+                break
+
+        if test_benchmark is None:
+            pytest.skip("Could not find PointPolygonTimeSuite.time_distance benchmark")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        comparator = Comparator()
+
+        # Run 3 times - should be identical due to seed reset
+        result1 = runner.run_benchmark(test_benchmark)
+        assert result1.success is True
+        value1 = result1.return_value
+
+        result2 = runner.run_benchmark(test_benchmark)
+        assert result2.success is True
+        value2 = result2.return_value
+
+        result3 = runner.run_benchmark(test_benchmark)
+        assert result3.success is True
+        value3 = result3.return_value
+
+        # All three runs should produce identical results
+        comparison_1_2 = comparator.compare(value1, value2)
+        comparison_2_3 = comparator.compare(value2, value3)
+
+        assert comparison_1_2.match is True, "Runs 1 and 2 should match (seed reset working)"
+        assert comparison_2_3.match is True, "Runs 2 and 3 should match (seed reset working)"
+
+    def test_shapely_multiple_benchmarks_verify(self, shapely_workspace):
+        """Test running multiple shapely benchmarks and verifying all."""
+        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        benchmarks = discovery.discover_all()
+
+        target_benchmarks = [
+            ('ConstructorsSuite', 'time_point'),
+            ('ConstructorsSuite', 'time_linestring_from_numpy'),
+            ('ConstructorsSuite', 'time_linearring_from_numpy'),
+        ]
+
+        selected_benchmarks = []
+        for class_name, bench_name in target_benchmarks:
+            for b in benchmarks:
+                if b.class_name == class_name and b.name == bench_name:
+                    selected_benchmarks.append(b)
+                    break
+
+        if len(selected_benchmarks) < 2:
+            pytest.skip("Could not find enough benchmarks")
+
+        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        storage = SnapshotManager(shapely_workspace['snapshots'])
+        comparator = Comparator()
+
+        # Capture all
+        capture_results = {}
+        for benchmark in selected_benchmarks:
+            result = runner.run_benchmark(benchmark)
+            if result.success:
+                capture_results[benchmark.name] = result.return_value
+                storage.store_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=(),
+                    param_names=None,
+                    return_value=result.return_value
+                )
+
+        assert len(capture_results) >= 2, "Should capture at least 2 benchmarks"
+
+        # Verify all
+        verify_results = {}
+        for benchmark in selected_benchmarks:
+            if benchmark.name in capture_results:
+                result = runner.run_benchmark(benchmark)
+                assert result.success is True
+
+                loaded_value, _ = storage.load_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=()
+                )
+
+                comparison = comparator.compare(result.return_value, loaded_value)
+                verify_results[benchmark.name] = comparison.match
+
+        all_passed = all(verify_results.values())
+        failed_benchmarks = [name for name, passed in verify_results.items() if not passed]
+
+        assert all_passed, f"All benchmarks should pass verification. Failed: {failed_benchmarks}"

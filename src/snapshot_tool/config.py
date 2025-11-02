@@ -6,9 +6,9 @@ for the snapshot testing tool.
 """
 
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from typing import Any
 
 
 @dataclass
@@ -18,10 +18,10 @@ class SnapshotConfig:
     # Directories
     benchmark_dir: str = "benchmarks/"
     snapshot_dir: str = ".snapshots/"
-    project_dir: Optional[str] = None
+    project_dir: str | None = None
 
     # Comparison settings
-    tolerance: Dict[str, float] = None
+    tolerance: dict[str, float] = None
 
     # Filtering
     exclude_benchmarks: list = None
@@ -38,14 +38,14 @@ class SnapshotConfig:
             self.tolerance = {"rtol": 1e-5, "atol": 1e-8, "equal_nan": False}
 
         if self.exclude_benchmarks is None:
-            self.exclude_benchmarks = ["timeraw_*"]
+            self.exclude_benchmarks = []
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SnapshotConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "SnapshotConfig":
         """Create from dictionary."""
         return cls(**data)
 
@@ -56,7 +56,7 @@ class SnapshotConfig:
             return cls()
 
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 data = json.load(f)
             return cls.from_dict(data)
         except Exception as e:
@@ -78,7 +78,7 @@ class SnapshotConfig:
         """Get snapshot directory as Path."""
         return Path(self.snapshot_dir)
 
-    def get_project_dir(self) -> Optional[Path]:
+    def get_project_dir(self) -> Path | None:
         """Get project directory as Path."""
         if self.project_dir:
             return Path(self.project_dir)
@@ -99,7 +99,7 @@ class SnapshotConfig:
 class ConfigManager:
     """Manages configuration loading and saving."""
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(self, config_path: Path | None = None):
         self.config_path = config_path or Path("snapshot_config.json")
         self.config = SnapshotConfig.from_file(self.config_path)
 

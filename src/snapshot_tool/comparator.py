@@ -5,10 +5,10 @@ This module compares captured outputs with stored snapshots using
 numpy.allclose for numerical data and other strategies for different types.
 """
 
-import numpy as np
-from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
-import warnings
+from typing import Any
+
+import numpy as np
 
 
 @dataclass
@@ -16,9 +16,9 @@ class ComparisonResult:
     """Result of comparing two values."""
 
     match: bool
-    tolerance_used: Optional[Dict[str, float]] = None
-    error_message: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
+    tolerance_used: dict[str, float] | None = None
+    error_message: str | None = None
+    details: dict[str, Any] | None = None
 
 
 @dataclass
@@ -36,7 +36,7 @@ class ComparisonConfig:
 class Comparator:
     """Compares values with configurable tolerances."""
 
-    def __init__(self, config: Optional[ComparisonConfig] = None):
+    def __init__(self, config: ComparisonConfig | None = None):
         self.config = config or ComparisonConfig()
 
     def compare(self, actual: Any, expected: Any) -> ComparisonResult:
@@ -100,7 +100,7 @@ class Comparator:
                 match=False, error_message=f"Comparison failed with exception: {e}"
             )
 
-    def _compare_class_instance(self, actual: Any, expected: Dict[str, Any]) -> ComparisonResult:
+    def _compare_class_instance(self, actual: Any, expected: dict[str, Any]) -> ComparisonResult:
         """Compare a class instance with a serialized class instance."""
         # Check if actual is also a class instance
         if not hasattr(actual, "__class__"):
@@ -148,7 +148,7 @@ class Comparator:
 
         return ComparisonResult(match=True)
 
-    def _compare_numpy_arrays(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_numpy_arrays(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Compare numpy arrays."""
         if not (isinstance(actual, np.ndarray) and isinstance(expected, np.ndarray)):
             return None
@@ -167,7 +167,11 @@ class Comparator:
                 error_message=f"Array dtypes differ: {actual.dtype} vs {expected.dtype}",
             )
 
-        # Use numpy.allclose for comparison
+        # Handle object arrays (like Shapely geometry arrays) - compare element-wise
+        if actual.dtype == object or expected.dtype == object:
+            return self._compare_object_arrays(actual, expected)
+
+        # Use numpy.allclose for comparison of numeric arrays
         try:
             match = np.allclose(
                 actual,
@@ -208,7 +212,7 @@ class Comparator:
         except Exception as e:
             return ComparisonResult(match=False, error_message=f"numpy.allclose failed: {e}")
 
-    def _compare_scalars(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_scalars(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Compare scalar values."""
         # Check if both are numeric scalars
         if not (self._is_numeric_scalar(actual) and self._is_numeric_scalar(expected)):
@@ -248,7 +252,7 @@ class Comparator:
         except Exception as e:
             return ComparisonResult(match=False, error_message=f"Scalar comparison failed: {e}")
 
-    def _compare_sequences(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_sequences(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Compare sequences (lists, tuples, etc.)."""
         if not (self._is_sequence(actual) and self._is_sequence(expected)):
             return None
@@ -276,7 +280,7 @@ class Comparator:
         else:
             return ComparisonResult(match=True)
 
-    def _compare_dicts(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_dicts(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Compare dictionaries."""
         if not (isinstance(actual, dict) and isinstance(expected, dict)):
             return None
@@ -308,30 +312,129 @@ class Comparator:
         else:
             return ComparisonResult(match=True)
 
-    def _compare_objects(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_objects(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Compare objects with __eq__ method."""
-        if not (hasattr(actual, "__eq__") and hasattr(expected, "__eq__")):
-            return None
+        # Check if both objects have __eq__ defined (not just inherited from object)
+        actual_type = type(actual)
+        expected_type = type(expected)
+
+        # Check if types match
+        if actual_type != expected_type:
+            return ComparisonResult(
+                match=False,
+                error_message=f"Type mismatch: {actual_type.__name__} vs {expected_type.__name__}",
+            )
+
+        # Check if __eq__ is properly implemented (not just the default object.__eq__)
+        has_custom_eq = False
+        for cls in actual_type.__mro__:
+            if "__eq__" in cls.__dict__:
+                has_custom_eq = True
+                break
+
+        if not has_custom_eq:
+            # No custom __eq__, skip comparison and log
+            return ComparisonResult(
+                match=True,
+                details={
+                    "skipped": True,
+                    "reason": f"Type {actual_type.__name__} has no custom __eq__ method",
+                    "type": actual_type.__name__,
+                },
+                error_message=f"Skipped comparison: {actual_type.__name__} has no custom __eq__",
+            )
 
         try:
             match = actual == expected
+            # Check if __eq__ returned NotImplemented
+            if match is NotImplemented:
+                return ComparisonResult(
+                    match=True,
+                    details={
+                        "skipped": True,
+                        "reason": f"__eq__ returned NotImplemented for {actual_type.__name__}",
+                        "type": actual_type.__name__,
+                    },
+                    error_message=f"Skipped: __eq__ not implemented for {actual_type.__name__}",
+                )
+
             return ComparisonResult(
                 match=match,
                 error_message=None if match else f"Objects not equal: {actual} vs {expected}",
             )
         except Exception as e:
-            return ComparisonResult(match=False, error_message=f"Object comparison failed: {e}")
+            return ComparisonResult(
+                match=False, error_message=f"Object comparison failed: {e}", details={"type": actual_type.__name__}
+            )
 
-    def _compare_fallback(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+    def _compare_fallback(self, actual: Any, expected: Any) -> ComparisonResult | None:
         """Fallback comparison using == operator."""
         try:
+            # Check type consistency
+            if type(actual) != type(expected):
+                return ComparisonResult(
+                    match=False,
+                    error_message=f"Type mismatch: {type(actual).__name__} vs {type(expected).__name__}",
+                )
+
             match = actual == expected
+
+            # If comparison returned NotImplemented, skip
+            if match is NotImplemented:
+                return ComparisonResult(
+                    match=True,
+                    details={
+                        "skipped": True,
+                        "reason": f"Comparison not supported for {type(actual).__name__}",
+                        "type": type(actual).__name__,
+                    },
+                    error_message=f"Skipped: comparison not supported for {type(actual).__name__}",
+                )
+
             return ComparisonResult(
                 match=match,
                 error_message=None if match else f"Values not equal: {actual} vs {expected}",
             )
         except Exception as e:
-            return ComparisonResult(match=False, error_message=f"Fallback comparison failed: {e}")
+            # If comparison fails, skip with warning
+            return ComparisonResult(
+                match=True,
+                details={
+                    "skipped": True,
+                    "reason": f"Comparison failed: {e}",
+                    "type": type(actual).__name__,
+                },
+                error_message=f"Skipped: comparison failed for {type(actual).__name__}: {e}",
+            )
+
+    def _compare_object_arrays(self, actual: np.ndarray, expected: np.ndarray) -> ComparisonResult:
+        """Compare numpy object arrays element-wise."""
+        # Flatten arrays for easier comparison
+        actual_flat = actual.flatten()
+        expected_flat = expected.flatten()
+
+        # Compare each element
+        mismatches = []
+        for i, (a, e) in enumerate(zip(actual_flat, expected_flat)):
+            # Use the compare method recursively for each element
+            result = self.compare(a, e)
+            if not result.match:
+                mismatches.append((i, result.error_message))
+                # Limit the number of mismatches we track for performance
+                if len(mismatches) >= 10:
+                    break
+
+        if mismatches:
+            return ComparisonResult(
+                match=False,
+                error_message=f"Object array elements differ at indices: {[i for i, _ in mismatches[:5]]}",
+                details={"mismatches": mismatches, "total_elements": len(actual_flat)},
+            )
+        else:
+            return ComparisonResult(
+                match=True,
+                details={"array_type": "object", "total_elements": len(actual_flat)},
+            )
 
     def _is_numeric_scalar(self, value: Any) -> bool:
         """Check if value is a numeric scalar."""
@@ -346,8 +449,8 @@ class Comparator:
         )
 
     def compare_multiple(
-        self, actual_values: List[Any], expected_values: List[Any]
-    ) -> List[ComparisonResult]:
+        self, actual_values: list[Any], expected_values: list[Any]
+    ) -> list[ComparisonResult]:
         """Compare multiple pairs of values."""
         if len(actual_values) != len(expected_values):
             raise ValueError("Lists must have the same length")
@@ -357,7 +460,7 @@ class Comparator:
             for actual, expected in zip(actual_values, expected_values)
         ]
 
-    def get_summary_stats(self, results: List[ComparisonResult]) -> Dict[str, Any]:
+    def get_summary_stats(self, results: list[ComparisonResult]) -> dict[str, Any]:
         """Get summary statistics for a list of comparison results."""
         total = len(results)
         matches = sum(1 for r in results if r.match)

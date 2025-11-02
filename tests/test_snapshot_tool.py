@@ -8,7 +8,7 @@ This script tests the tool with the provided astropy benchmark examples.
 import sys
 from pathlib import Path
 
-from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager, Comparator
+from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, Comparator, SnapshotManager
 
 
 def test_discovery():

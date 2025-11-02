@@ -52,7 +52,7 @@ def test_minimal_benchmarks():
                     print(f"    Depth: {result.depth}")
                     success_count += 1
                 else:
-                    print(f"  ✗ Failed to capture return value")
+                    print("  ✗ Failed to capture return value")
                     if result:
                         print(f"    Error: {result.error}")
         else:
@@ -66,7 +66,7 @@ def test_minimal_benchmarks():
                 print(f"    Depth: {result.depth}")
                 success_count += 1
             else:
-                print(f"  ✗ Failed to capture return value")
+                print("  ✗ Failed to capture return value")
                 if result:
                     print(f"    Error: {result.error}")
 
@@ -125,7 +125,7 @@ def main():
         success_count, total_benchmarks = test_minimal_benchmarks()
         storage_success = test_storage()
 
-        print(f"\nTest Results:")
+        print("\nTest Results:")
         print(f"  Benchmarks: {success_count}/{total_benchmarks} passed")
         print(f"  Storage: {'✓' if storage_success else '✗'}")
 

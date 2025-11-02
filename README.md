@@ -139,7 +139,7 @@ Create a `snapshot_config.json` file to customize behavior:
     "atol": 1e-8,
     "equal_nan": false
   },
-  "exclude_benchmarks": ["timeraw_*"],
+  "exclude_benchmarks": [],
   "trace_depth_limit": 100,
   "verbose": false,
   "quiet": false

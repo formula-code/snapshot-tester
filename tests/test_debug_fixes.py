@@ -53,7 +53,7 @@ def test_simple_benchmark():
         print(f"  Depth: {result.depth}")
         return True
     else:
-        print(f"✗ Failed to capture return value")
+        print("✗ Failed to capture return value")
         if result:
             print(f"  Error: {result.error}")
         return False
@@ -103,7 +103,7 @@ def test_parameterized_benchmark():
             print(f"  Depth: {result.depth}")
             return True
         else:
-            print(f"✗ Failed to capture return value")
+            print("✗ Failed to capture return value")
             if result:
                 print(f"  Error: {result.error}")
             return False

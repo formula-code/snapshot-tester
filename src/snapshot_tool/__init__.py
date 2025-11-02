@@ -8,13 +8,13 @@ from benchmarks to verify correctness after optimizations.
 __version__ = "0.1.0"
 
 # Import main classes for public API
+from .cli import SnapshotCLI, main
+from .comparator import Comparator, ComparisonConfig, ComparisonResult
+from .config import ConfigManager, SnapshotConfig
 from .discovery import BenchmarkDiscovery, BenchmarkInfo
 from .runner import BenchmarkRunner
 from .storage import SnapshotManager, SnapshotMetadata
-from .comparator import Comparator, ComparisonConfig, ComparisonResult
 from .tracer import ExecutionTracer, TraceResult
-from .config import ConfigManager, SnapshotConfig
-from .cli import SnapshotCLI, main
 
 __all__ = [
     # Version

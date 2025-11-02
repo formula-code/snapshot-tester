@@ -7,8 +7,9 @@ the deepest function call's return value during benchmark execution.
 
 import sys
 import types
-from typing import Any, Optional, Set, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -20,7 +21,7 @@ class TraceResult:
     module_name: str
     depth: int
     success: bool
-    error: Optional[Exception] = None
+    error: Exception | None = None
 
 
 class ExecutionTracer:
@@ -28,11 +29,11 @@ class ExecutionTracer:
 
     def __init__(self, max_depth: int = 100):
         self.max_depth = max_depth
-        self.deepest_call: Optional[TraceResult] = None
+        self.deepest_call: TraceResult | None = None
         self.current_depth = 0
         self.max_depth_reached = 0
         self.tracing = False
-        self.current_frame: Optional[types.FrameType] = None
+        self.current_frame: types.FrameType | None = None
 
         # Functions to exclude from tracing - expanded to include all stdlib modules
         self.excluded_modules = {
@@ -145,7 +146,7 @@ class ExecutionTracer:
         try:
             # Execute the function
             func(*args, **kwargs)
-        except Exception as e:
+        except Exception:
             # Even if the function raises an exception, we might have captured something
             pass
         finally:
@@ -172,13 +173,13 @@ class ExecutionTracer:
         self.deepest_call = None
         sys.settrace(self._trace_calls)
 
-    def stop_tracing(self) -> Optional[TraceResult]:
+    def stop_tracing(self) -> TraceResult | None:
         """Stop tracing and return the deepest captured call."""
         sys.settrace(None)
         self.tracing = False
         return self.deepest_call
 
-    def _trace_calls(self, frame: types.FrameType, event: str, arg: Any) -> Optional[Callable]:
+    def _trace_calls(self, frame: types.FrameType, event: str, arg: Any) -> Callable | None:
         """Trace function calls and returns."""
         if not self.tracing:
             return None
@@ -192,7 +193,7 @@ class ExecutionTracer:
 
         return self._trace_calls
 
-    def _handle_call(self, frame: types.FrameType) -> Optional[Callable]:
+    def _handle_call(self, frame: types.FrameType) -> Callable | None:
         """Handle function call events."""
         if not self._should_trace_frame(frame):
             return None
@@ -210,13 +211,14 @@ class ExecutionTracer:
         # No more debug print here
         return self._trace_calls
 
-    def _handle_return(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
+    def _handle_return(self, frame: types.FrameType, arg: Any) -> Callable | None:
         """Handle function return events."""
         if not self._should_trace_frame(frame):
             return None
 
-        # Only capture if this is deeper than our current deepest call
-        if self.deepest_call is None or self.current_depth > self.deepest_call.depth:
+        # Capture the FIRST meaningful return value
+        # This is more deterministic than depth-based capture
+        if self.deepest_call is None:
             # Skip None returns and some common non-meaningful returns
             if arg is not None and not self._is_meaningless_return(arg):
                 self.deepest_call = TraceResult(
@@ -230,13 +232,13 @@ class ExecutionTracer:
         self.current_depth -= 1
         return self._trace_calls
 
-    def _handle_exception(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
+    def _handle_exception(self, frame: types.FrameType, arg: Any) -> Callable | None:
         """Handle exception events."""
         if not self._should_trace_frame(frame):
             return None
 
-        # Record exception as deepest call if it's the deepest we've seen
-        if self.deepest_call is None or self.current_depth > self.deepest_call.depth:
+        # Record exception as first call if we haven't captured anything yet
+        if self.deepest_call is None:
             self.deepest_call = TraceResult(
                 return_value=None,
                 function_name=frame.f_code.co_name,
@@ -272,8 +274,17 @@ class ExecutionTracer:
                     return False
 
         # Skip numpy internals and other common third-party library internals
-        numpy_internal_patterns = ['numpy._core', 'numpy.core', 'numpy.lib', 'numpy.ma']
+        numpy_internal_patterns = [
+            'numpy._core', 'numpy.core', 'numpy.lib', 'numpy.ma', 'numpy.array_api',
+            'numpy.f2py', 'numpy.fft', 'numpy.linalg', 'numpy.random', 'numpy.testing',
+            'numpy._', 'numpy.compat', 'numpy.matrixlib'
+        ]
         if any(module_name.startswith(pattern) for pattern in numpy_internal_patterns):
+            return False
+
+        # Skip shapely internals - only trace top-level shapely functions
+        shapely_internal_patterns = ['shapely.lib', 'shapely._', 'shapely.geos', 'shapely.geometry.base']
+        if any(module_name.startswith(pattern) for pattern in shapely_internal_patterns):
             return False
 
         # Skip excluded methods

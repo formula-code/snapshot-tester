@@ -5,15 +5,14 @@ This module handles storing and retrieving snapshots using pickle files
 with an organized directory structure.
 """
 
-import pickle
 import hashlib
 import json
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
-from datetime import datetime
 import os
-import copy
+import pickle
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -22,17 +21,18 @@ class SnapshotMetadata:
 
     benchmark_name: str
     module_path: str
-    parameters: Tuple[Any, ...]
-    param_names: Optional[List[str]]
+    parameters: tuple[Any, ...]
+    param_names: list[str] | None
     timestamp: datetime
-    git_commit: Optional[str] = None
-    git_branch: Optional[str] = None
-    python_version: Optional[str] = None
-    platform: Optional[str] = None
+    class_name: str | None = None  # Added to disambiguate benchmarks with same name
+    git_commit: str | None = None
+    git_branch: str | None = None
+    python_version: str | None = None
+    platform: str | None = None
     capture_failed: bool = False
-    failure_reason: Optional[str] = None
+    failure_reason: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         data = asdict(self)
         # Convert datetime to string
@@ -40,7 +40,7 @@ class SnapshotMetadata:
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SnapshotMetadata":
+    def from_dict(cls, data: dict[str, Any]) -> "SnapshotMetadata":
         """Create from dictionary."""
         # Convert timestamp string back to datetime
         if isinstance(data["timestamp"], str):
@@ -59,18 +59,23 @@ class SnapshotManager:
         self,
         benchmark_name: str,
         module_path: str,
-        parameters: Tuple[Any, ...],
-        param_names: Optional[List[str]],
+        parameters: tuple[Any, ...],
+        param_names: list[str] | None,
         return_value: Any,
-        metadata: Optional[Dict[str, Any]] = None,
+        class_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Path:
         """Store a snapshot with its metadata."""
 
         # Generate parameter hash for unique identification
         param_hash = self._generate_param_hash(parameters)
 
-        # Create directory structure: .snapshots/<module>/<benchmark>/
-        snapshot_path = self.snapshot_dir / module_path / benchmark_name / f"{param_hash}.pkl"
+        # Create directory structure: .snapshots/<module>/<class>.<benchmark>/ or .snapshots/<module>/<benchmark>/
+        if class_name:
+            benchmark_dir = f"{class_name}.{benchmark_name}"
+        else:
+            benchmark_dir = benchmark_name
+        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
         snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create metadata
@@ -79,6 +84,7 @@ class SnapshotManager:
             module_path=module_path,
             parameters=parameters,
             param_names=param_names,
+            class_name=class_name,
             timestamp=datetime.now(),
             git_commit=self._get_git_commit(),
             git_branch=self._get_git_branch(),
@@ -118,18 +124,23 @@ class SnapshotManager:
         self,
         benchmark_name: str,
         module_path: str,
-        parameters: Tuple[Any, ...],
-        param_names: Optional[List[str]],
+        parameters: tuple[Any, ...],
+        param_names: list[str] | None,
         failure_reason: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        class_name: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Path:
         """Store a failed capture marker."""
 
         # Generate parameter hash for unique identification
         param_hash = self._generate_param_hash(parameters)
 
-        # Create directory structure: .snapshots/<module>/<benchmark>/
-        snapshot_path = self.snapshot_dir / module_path / benchmark_name / f"{param_hash}.pkl"
+        # Create directory structure: .snapshots/<module>/<class>.<benchmark>/ or .snapshots/<module>/<benchmark>/
+        if class_name:
+            benchmark_dir = f"{class_name}.{benchmark_name}"
+        else:
+            benchmark_dir = benchmark_name
+        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
         snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create metadata for failed capture
@@ -138,6 +149,7 @@ class SnapshotManager:
             module_path=module_path,
             parameters=parameters,
             param_names=param_names,
+            class_name=class_name,
             timestamp=datetime.now(),
             git_commit=self._get_git_commit(),
             git_branch=self._get_git_branch(),
@@ -244,8 +256,8 @@ class SnapshotManager:
         return value
 
     def load_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: Tuple[Any, ...]
-    ) -> Optional[Tuple[Any, SnapshotMetadata]]:
+        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
+    ) -> tuple[Any, SnapshotMetadata] | None:
         """Load a snapshot and its metadata."""
 
         param_hash = self._generate_param_hash(parameters)
@@ -271,7 +283,7 @@ class SnapshotManager:
             return None
 
     def is_failed_capture(
-        self, benchmark_name: str, module_path: str, parameters: Tuple[Any, ...]
+        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
     ) -> bool:
         """Check if a snapshot represents a failed capture."""
         snapshot_data = self.load_snapshot(benchmark_name, module_path, parameters)
@@ -282,8 +294,8 @@ class SnapshotManager:
         return metadata.capture_failed
 
     def list_snapshots(
-        self, module_path: Optional[str] = None, benchmark_name: Optional[str] = None
-    ) -> List[Tuple[Path, SnapshotMetadata]]:
+        self, module_path: str | None = None, benchmark_name: str | None = None
+    ) -> list[tuple[Path, SnapshotMetadata]]:
         """List all available snapshots."""
         snapshots = []
 
@@ -310,7 +322,7 @@ class SnapshotManager:
         return snapshots
 
     def delete_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: Tuple[Any, ...]
+        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
     ) -> bool:
         """Delete a specific snapshot."""
 
@@ -340,7 +352,7 @@ class SnapshotManager:
                 except OSError:
                     pass  # Directory not empty or permission error
 
-    def get_snapshot_stats(self) -> Dict[str, Any]:
+    def get_snapshot_stats(self) -> dict[str, Any]:
         """Get statistics about stored snapshots."""
         snapshots = self.list_snapshots()
 
@@ -373,13 +385,13 @@ class SnapshotManager:
 
         return stats
 
-    def _generate_param_hash(self, parameters: Tuple[Any, ...]) -> str:
+    def _generate_param_hash(self, parameters: tuple[Any, ...]) -> str:
         """Generate a hash for parameter combination."""
         # Convert parameters to a string representation for hashing
         param_str = str(parameters)
         return hashlib.md5(param_str.encode()).hexdigest()[:16]
 
-    def _get_git_commit(self) -> Optional[str]:
+    def _get_git_commit(self) -> str | None:
         """Get current git commit hash."""
         try:
             import subprocess
@@ -393,7 +405,7 @@ class SnapshotManager:
             pass
         return None
 
-    def _get_git_branch(self) -> Optional[str]:
+    def _get_git_branch(self) -> str | None:
         """Get current git branch."""
         try:
             import subprocess

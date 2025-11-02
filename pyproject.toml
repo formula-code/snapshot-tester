@@ -40,6 +40,8 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.3.0",
     "mypy>=1.8.0",
+    "shapely>=2.0.0",
+    "astropy>=7.1.1",
 ]
 
 [tool.ruff]
@@ -73,3 +75,4 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --strict-markers"
+norecursedirs = ["tests/test_repos/*"]

@@ -6,12 +6,10 @@ functions, parameters, and setup methods.
 """
 
 import ast
-import importlib.util
 import os
-import sys
-from pathlib import Path
-from typing import Dict, List, Set, Tuple, Any, Optional, Union
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -21,12 +19,12 @@ class BenchmarkInfo:
     name: str
     module_path: str
     benchmark_type: str  # 'function' or 'method'
-    class_name: Optional[str] = None
-    params: Optional[List[List[Any]]] = None
-    param_names: Optional[List[str]] = None
-    setup_method: Optional[str] = None
+    class_name: str | None = None
+    params: list[list[Any]] | None = None
+    param_names: list[str] | None = None
+    setup_method: str | None = None
     has_setup: bool = False
-    method_params: Optional[List[str]] = None  # Parameters expected by the method itself
+    method_params: list[str] | None = None  # Parameters expected by the method itself
     needs_runtime_eval: bool = False  # Whether params need runtime evaluation
 
 
@@ -36,11 +34,11 @@ class BenchmarkDiscovery:
     # ASV benchmark prefixes
     BENCHMARK_PREFIXES = {"time_", "timeraw_", "mem_", "peakmem_", "track_"}
 
-    def __init__(self, benchmark_dir: Union[str, Path]):
+    def __init__(self, benchmark_dir: str | Path):
         self.benchmark_dir = Path(benchmark_dir)
-        self.discovered_benchmarks: List[BenchmarkInfo] = []
+        self.discovered_benchmarks: list[BenchmarkInfo] = []
 
-    def discover_all(self) -> List[BenchmarkInfo]:
+    def discover_all(self) -> list[BenchmarkInfo]:
         """Discover all benchmarks in the benchmark directory."""
         self.discovered_benchmarks = []
 
@@ -58,12 +56,12 @@ class BenchmarkDiscovery:
 
         return self.discovered_benchmarks
 
-    def _discover_in_file(self, file_path: Path) -> List[BenchmarkInfo]:
+    def _discover_in_file(self, file_path: Path) -> list[BenchmarkInfo]:
         """Discover benchmarks in a single Python file."""
         benchmarks = []
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
 
             tree = ast.parse(content, filename=str(file_path))
@@ -94,7 +92,7 @@ class BenchmarkDiscovery:
 
     def _discover_class_benchmarks(
         self, class_node: ast.ClassDef, module_path: str
-    ) -> List[BenchmarkInfo]:
+    ) -> list[BenchmarkInfo]:
         """Discover benchmarks within a class."""
         benchmarks = []
 
@@ -148,7 +146,7 @@ class BenchmarkDiscovery:
 
         return benchmarks
 
-    def _get_method_parameters(self, method_node: ast.FunctionDef) -> List[str]:
+    def _get_method_parameters(self, method_node: ast.FunctionDef) -> list[str]:
         """Extract parameter names from a method definition."""
         params = []
         for arg in method_node.args.args:
@@ -160,7 +158,7 @@ class BenchmarkDiscovery:
         """Check if a function name indicates it's a benchmark."""
         return any(name.startswith(prefix) for prefix in self.BENCHMARK_PREFIXES)
 
-    def _extract_params(self, params_node) -> List[List[Any]]:
+    def _extract_params(self, params_node) -> list[list[Any]]:
         """Extract parameter values from AST."""
         params = []
         # Handle both List and Tuple nodes
@@ -181,7 +179,7 @@ class BenchmarkDiscovery:
                 params.append(param_values)
         return params
 
-    def _extract_param_names(self, param_names_node: ast.List) -> List[str]:
+    def _extract_param_names(self, param_names_node: ast.List) -> list[str]:
         """Extract parameter names from AST."""
         param_names = []
         for elt in param_names_node.elts:
@@ -221,7 +219,7 @@ class BenchmarkDiscovery:
             # Return a placeholder that indicates this needs runtime evaluation
             return f"<runtime_eval:{ast.unparse(node) if hasattr(ast, 'unparse') else str(node)}>"
 
-    def generate_parameter_combinations(self, benchmark: BenchmarkInfo) -> List[Tuple[Any, ...]]:
+    def generate_parameter_combinations(self, benchmark: BenchmarkInfo) -> list[tuple[Any, ...]]:
         """Generate all parameter combinations for a parameterized benchmark."""
         if not benchmark.params:
             return [()]
@@ -235,13 +233,13 @@ class BenchmarkDiscovery:
 
         return list(itertools.product(*benchmark.params))
 
-    def get_benchmark_by_name(self, name: str) -> Optional[BenchmarkInfo]:
+    def get_benchmark_by_name(self, name: str) -> BenchmarkInfo | None:
         """Get a benchmark by its name."""
         for benchmark in self.discovered_benchmarks:
             if benchmark.name == name:
                 return benchmark
         return None
 
-    def get_benchmarks_by_module(self, module_path: str) -> List[BenchmarkInfo]:
+    def get_benchmarks_by_module(self, module_path: str) -> list[BenchmarkInfo]:
         """Get all benchmarks from a specific module."""
         return [b for b in self.discovered_benchmarks if b.module_path == module_path]

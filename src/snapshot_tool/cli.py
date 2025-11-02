@@ -8,13 +8,12 @@ of ASV benchmark outputs.
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
 
+from .comparator import Comparator, ComparisonConfig
+from .config import ConfigManager
+from .discovery import BenchmarkDiscovery
 from .runner import BenchmarkRunner
 from .storage import SnapshotManager
-from .comparator import Comparator, ComparisonConfig
-from .config import ConfigManager, SnapshotConfig
-from .discovery import BenchmarkDiscovery
 
 
 class SnapshotCLI:
@@ -24,7 +23,7 @@ class SnapshotCLI:
         self.config_manager = ConfigManager()
         self.config = self.config_manager.get_config()
 
-    def run(self, args: Optional[List[str]] = None) -> int:
+    def run(self, args: list[str] | None = None) -> int:
         """Run the CLI with given arguments."""
         parser = self._create_parser()
         parsed_args = parser.parse_args(args)
@@ -166,6 +165,7 @@ class SnapshotCLI:
                             parameters=params,
                             param_names=benchmark.param_names,
                             return_value=result.return_value,
+                            class_name=benchmark.class_name,
                         )
                         captured_count += 1
                         if not self.config.quiet:
@@ -181,12 +181,13 @@ class SnapshotCLI:
                             parameters=params,
                             param_names=benchmark.param_names,
                             failure_reason=failure_reason,
+                            class_name=benchmark.class_name,
                         )
                         print(f"  Failed to capture with params: {params} - {failure_reason}")
                         if self.config.verbose and result and result.error:
                             import traceback
 
-                            print(f"    Full error traceback:")
+                            print("    Full error traceback:")
                             traceback.print_exc()
             else:
                 # Capture without parameters
@@ -198,6 +199,7 @@ class SnapshotCLI:
                         parameters=(),
                         param_names=None,
                         return_value=result.return_value,
+                        class_name=benchmark.class_name,
                     )
                     captured_count += 1
                 else:
@@ -211,12 +213,13 @@ class SnapshotCLI:
                         parameters=(),
                         param_names=None,
                         failure_reason=failure_reason,
+                        class_name=benchmark.class_name,
                     )
                     print(f"  Failed to capture - {failure_reason}")
                     if self.config.verbose and result and result.error:
                         import traceback
 
-                        print(f"    Full error traceback:")
+                        print("    Full error traceback:")
                         traceback.print_exc()
 
         print(f"Captured {captured_count} snapshots")
@@ -323,13 +326,13 @@ class SnapshotCLI:
             else:
                 # Check if this was a failed capture
                 if storage.is_failed_capture(benchmark.name, benchmark.module_path, ()):
-                    print(f"  Skipping failed capture")
+                    print("  Skipping failed capture")
                     continue
 
                 # Verify without parameters
                 result = runner.run_benchmark(benchmark)
                 if not result or not result.success:
-                    print(f"  Failed to run")
+                    print("  Failed to run")
                     failed_tests += 1
                     total_tests += 1
                     continue
@@ -339,7 +342,7 @@ class SnapshotCLI:
                 )
 
                 if snapshot_data is None:
-                    print(f"  No snapshot found")
+                    print("  No snapshot found")
                     failed_tests += 1
                     total_tests += 1
                     continue
@@ -352,15 +355,15 @@ class SnapshotCLI:
                 if comparison.match:
                     passed_tests += 1
                     if not self.config.quiet:
-                        print(f"  ✓ Passed")
+                        print("  ✓ Passed")
                 else:
                     failed_tests += 1
-                    print(f"  ✗ Failed")
+                    print("  ✗ Failed")
                     print(f"    Error: {comparison.error_message}")
                     if self.config.verbose and comparison.details:
                         print(f"    Details: {comparison.details}")
 
-        print(f"\nVerification complete:")
+        print("\nVerification complete:")
         print(f"  Total tests: {total_tests}")
         print(f"  Passed: {passed_tests}")
         print(f"  Failed: {failed_tests}")
@@ -386,7 +389,7 @@ class SnapshotCLI:
                 if benchmark.has_setup:
                     print(f"    Setup: {benchmark.setup_method}")
             else:
-                print(f"    Type: function")
+                print("    Type: function")
 
             if benchmark.params:
                 param_combinations = discovery.generate_parameter_combinations(benchmark)
