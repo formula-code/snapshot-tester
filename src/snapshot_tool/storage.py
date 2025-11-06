@@ -14,7 +14,7 @@ import pickle
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +26,15 @@ class SnapshotMetadata:
     benchmark_name: str
     module_path: str
     parameters: tuple[Any, ...]
-    param_names: list[str] | None
+    param_names: Optional[list[str]]
     timestamp: datetime
-    class_name: str | None = None  # Added to disambiguate benchmarks with same name
-    git_commit: str | None = None
-    git_branch: str | None = None
-    python_version: str | None = None
-    platform: str | None = None
+    class_name: Optional[str] = None  # Added to disambiguate benchmarks with same name
+    git_commit: Optional[str] = None
+    git_branch: Optional[str] = None
+    python_version: Optional[str] = None
+    platform: Optional[str] = None
     capture_failed: bool = False
-    failure_reason: str | None = None
+    failure_reason: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -64,10 +64,10 @@ class SnapshotManager:
         benchmark_name: str,
         module_path: str,
         parameters: tuple[Any, ...],
-        param_names: list[str] | None,
+        param_names: Optional[list[str]],
         return_value: Any,
-        class_name: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        class_name: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> Path:
         """Store a snapshot with its metadata."""
 
@@ -129,10 +129,10 @@ class SnapshotManager:
         benchmark_name: str,
         module_path: str,
         parameters: tuple[Any, ...],
-        param_names: list[str] | None,
+        param_names: Optional[list[str]],
         failure_reason: str,
-        class_name: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        class_name: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> Path:
         """Store a failed capture marker."""
 
@@ -276,8 +276,8 @@ class SnapshotManager:
         return value
 
     def load_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...], class_name: str | None = None
-    ) -> tuple[Any, SnapshotMetadata] | None:
+        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...], class_name: Optional[str] = None
+    ) -> Optional[tuple[Any, SnapshotMetadata]]:
         """Load a snapshot and its metadata."""
 
         param_hash = self._generate_param_hash(parameters)
@@ -320,7 +320,7 @@ class SnapshotManager:
         return metadata.capture_failed
 
     def list_snapshots(
-        self, module_path: str | None = None, benchmark_name: str | None = None
+        self, module_path: Optional[str] = None, benchmark_name: Optional[str] = None
     ) -> list[tuple[Path, SnapshotMetadata]]:
         """List all available snapshots."""
         snapshots = []
@@ -417,7 +417,7 @@ class SnapshotManager:
         param_str = str(parameters)
         return hashlib.md5(param_str.encode()).hexdigest()[:16]
 
-    def _get_git_commit(self) -> str | None:
+    def _get_git_commit(self) -> Optional[str]:
         """Get current git commit hash."""
         try:
             import subprocess
@@ -431,7 +431,7 @@ class SnapshotManager:
             pass
         return None
 
-    def _get_git_branch(self) -> str | None:
+    def _get_git_branch(self) -> Optional[str]:
         """Get current git branch."""
         try:
             import subprocess

@@ -117,8 +117,9 @@ class TestNumpyArrayComparison:
         arr2 = np.array([('Alice', 25), ('Bob', 30)], dtype=dt)
 
         result = comparator.compare(arr1, arr2)
-        # Structured arrays cannot be compared with allclose (VoidDType)
-        assert result.match is False
+        # Pure Python implementation can compare structured arrays element-wise
+        # (Previous numpy.allclose couldn't handle VoidDType)
+        assert result.match is True
 
 
 class TestScalarComparison:

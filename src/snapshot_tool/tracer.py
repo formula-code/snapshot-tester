@@ -10,7 +10,7 @@ import sys
 import types
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -22,7 +22,7 @@ class TraceResult:
     module_name: str
     depth: int
     success: bool
-    error: Exception | None = None
+    error: Optional[Exception] = None
 
 
 class ExecutionTracer:
@@ -30,11 +30,11 @@ class ExecutionTracer:
 
     def __init__(self, max_depth: int = 100):
         self.max_depth = max_depth
-        self.deepest_call: TraceResult | None = None
+        self.deepest_call: Optional[TraceResult] = None
         self.current_depth = 0
         self.max_depth_reached = 0
         self.tracing = False
-        self.current_frame: types.FrameType | None = None
+        self.current_frame: Optional[types.FrameType] = None
 
         # Functions to exclude from tracing - expanded to include all stdlib modules
         self.excluded_modules = {
@@ -174,13 +174,13 @@ class ExecutionTracer:
         self.deepest_call = None
         sys.settrace(self._trace_calls)
 
-    def stop_tracing(self) -> TraceResult | None:
+    def stop_tracing(self) -> Optional[TraceResult]:
         """Stop tracing and return the deepest captured call."""
         sys.settrace(None)
         self.tracing = False
         return self.deepest_call
 
-    def _trace_calls(self, frame: types.FrameType, event: str, arg: Any) -> Callable | None:
+    def _trace_calls(self, frame: types.FrameType, event: str, arg: Any) -> Optional[Callable]:
         """Trace function calls and returns."""
         if not self.tracing:
             return None
@@ -194,7 +194,7 @@ class ExecutionTracer:
 
         return self._trace_calls
 
-    def _handle_call(self, frame: types.FrameType) -> Callable | None:
+    def _handle_call(self, frame: types.FrameType) -> Optional[Callable]:
         """Handle function call events."""
         if not self._should_trace_frame(frame):
             return None
@@ -212,7 +212,7 @@ class ExecutionTracer:
         # No more debug print here
         return self._trace_calls
 
-    def _handle_return(self, frame: types.FrameType, arg: Any) -> Callable | None:
+    def _handle_return(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
         """Handle function return events."""
         if not self._should_trace_frame(frame):
             return None
@@ -232,7 +232,7 @@ class ExecutionTracer:
         self.current_depth -= 1
         return self._trace_calls
 
-    def _handle_exception(self, frame: types.FrameType, arg: Any) -> Callable | None:
+    def _handle_exception(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
         """Handle exception events."""
         if not self._should_trace_frame(frame):
             return None

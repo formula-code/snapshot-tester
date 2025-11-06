@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class SnapshotConfig:
     # Directories
     benchmark_dir: str = "benchmarks/"
     snapshot_dir: str = ".snapshots/"
-    project_dir: str | None = None
+    project_dir: Optional[str] = None
 
     # Comparison settings
     tolerance: dict[str, float] = None
@@ -82,7 +82,7 @@ class SnapshotConfig:
         """Get snapshot directory as Path."""
         return Path(self.snapshot_dir)
 
-    def get_project_dir(self) -> Path | None:
+    def get_project_dir(self) -> Optional[Path]:
         """Get project directory as Path."""
         if self.project_dir:
             return Path(self.project_dir)
@@ -103,7 +103,7 @@ class SnapshotConfig:
 class ConfigManager:
     """Manages configuration loading and saving."""
 
-    def __init__(self, config_path: Path | None = None):
+    def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path or Path("snapshot_config.json")
         self.config = SnapshotConfig.from_file(self.config_path)
 

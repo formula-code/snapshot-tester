@@ -13,6 +13,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from .comparator import Comparator, ComparisonConfig
 from .config import ConfigManager
@@ -30,7 +31,7 @@ class SnapshotCLI:
         self.config_manager = ConfigManager()
         self.config = self.config_manager.get_config()
 
-    def run(self, args: list[str] | None = None) -> int:
+    def run(self, args: Optional[list[str]] = None) -> int:
         """Run the CLI with given arguments."""
         parser = self._create_parser()
         parsed_args = parser.parse_args(args)
@@ -303,8 +304,25 @@ class SnapshotCLI:
                 param_combinations = runner.get_param_combinations(benchmark)
 
                 for params in param_combinations:
-                    # Check if this was a failed capture
-                    if storage.is_failed_capture(benchmark.name, benchmark.module_path, params):
+                    # Load snapshot first to check if it exists
+                    snapshot_data = storage.load_snapshot(
+                        benchmark_name=benchmark.name,
+                        module_path=benchmark.module_path,
+                        parameters=params,
+                        class_name=benchmark.class_name,
+                    )
+
+                    # If no snapshot, skip (wasn't captured successfully)
+                    if snapshot_data is None:
+                        logger.info(f"  Skipping (no snapshot) with params: {params}")
+                        skipped_tests += 1
+                        total_tests += 1
+                        continue
+
+                    _, metadata = snapshot_data
+
+                    # If this was a failed capture, skip
+                    if metadata.capture_failed:
                         logger.info(f"  Skipping failed capture with params: {params}")
                         skipped_tests += 1
                         total_tests += 1
@@ -313,21 +331,9 @@ class SnapshotCLI:
                     # Run benchmark
                     result = runner.run_benchmark(benchmark, params)
                     if not result or not result.success:
-                        logger.warning(f"  Failed to run with params: {params}")
-                        failed_tests += 1
-                        total_tests += 1
-                        continue
-
-                    # Load snapshot
-                    snapshot_data = storage.load_snapshot(
-                        benchmark_name=benchmark.name,
-                        module_path=benchmark.module_path,
-                        parameters=params,
-                        class_name=benchmark.class_name,
-                    )
-
-                    if snapshot_data is None:
-                        logger.warning(f"  No snapshot found for params: {params}")
+                        # Benchmark failed during verify but succeeded during capture
+                        # This is a real failure (non-deterministic benchmark or environment change)
+                        logger.error(f"  ✗ Failed to run with params: {params} (succeeded during capture)")
                         failed_tests += 1
                         total_tests += 1
                         continue
@@ -355,8 +361,25 @@ class SnapshotCLI:
                         if self.config.verbose and comparison.details:
                             logger.debug(f"    Details: {comparison.details}")
             else:
-                # Check if this was a failed capture
-                if storage.is_failed_capture(benchmark.name, benchmark.module_path, ()):
+                # Check if snapshot exists
+                snapshot_data = storage.load_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=(),
+                    class_name=benchmark.class_name,
+                )
+
+                # If no snapshot, skip (wasn't captured successfully)
+                if snapshot_data is None:
+                    logger.info("  Skipping (no snapshot)")
+                    skipped_tests += 1
+                    total_tests += 1
+                    continue
+
+                _, metadata = snapshot_data
+
+                # If this was a failed capture, skip
+                if metadata.capture_failed:
                     logger.info("  Skipping failed capture")
                     skipped_tests += 1
                     total_tests += 1
@@ -365,20 +388,9 @@ class SnapshotCLI:
                 # Verify without parameters
                 result = runner.run_benchmark(benchmark)
                 if not result or not result.success:
-                    logger.warning("  Failed to run")
-                    failed_tests += 1
-                    total_tests += 1
-                    continue
-
-                snapshot_data = storage.load_snapshot(
-                    benchmark_name=benchmark.name,
-                    module_path=benchmark.module_path,
-                    parameters=(),
-                    class_name=benchmark.class_name,
-                )
-
-                if snapshot_data is None:
-                    logger.warning("  No snapshot found")
+                    # Benchmark failed during verify but succeeded during capture
+                    # This is a real failure (non-deterministic benchmark or environment change)
+                    logger.error("  ✗ Failed to run (succeeded during capture)")
                     failed_tests += 1
                     total_tests += 1
                     continue

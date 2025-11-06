@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,12 @@ class BenchmarkInfo:
     name: str
     module_path: str
     benchmark_type: str  # 'function' or 'method'
-    class_name: str | None = None
-    params: list[list[Any]] | None = None
-    param_names: list[str] | None = None
-    setup_method: str | None = None
+    class_name: Optional[str] = None
+    params: Optional[list[list[Any]]] = None
+    param_names: Optional[list[str]] = None
+    setup_method: Optional[str] = None
     has_setup: bool = False
-    method_params: list[str] | None = None  # Parameters expected by the method itself
+    method_params: Optional[list[str]] = None  # Parameters expected by the method itself
     needs_runtime_eval: bool = False  # Whether params need runtime evaluation
 
 
@@ -237,7 +237,7 @@ class BenchmarkDiscovery:
 
         return list(itertools.product(*benchmark.params))
 
-    def get_benchmark_by_name(self, name: str) -> BenchmarkInfo | None:
+    def get_benchmark_by_name(self, name: str) -> Optional[BenchmarkInfo]:
         """Get a benchmark by its name."""
         for benchmark in self.discovered_benchmarks:
             if benchmark.name == name:

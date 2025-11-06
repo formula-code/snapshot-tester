@@ -1,0 +1,49 @@
+name: Test Shapely Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Sundays at 06:00 UTC
+    - cron: '0 6 * * 0'
+
+jobs:
+  test-shapely:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+
+    - name: Install dependencies
+      run: |
+        uv sync
+        uv pip install -e ".[dev]"
+
+    - name: Run shapely benchmark roundtrip test
+      run: |
+        uv run pytest -v tests/test_cli_roundtrip.py::TestShapelyRoundtrip -x
+      timeout-minutes: 30
+
+    - name: Upload snapshots on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: shapely-snapshots-py${{ matrix.python-version }}
+        path: tests/.snapshots/
+        retention-days: 7

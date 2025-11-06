@@ -290,7 +290,7 @@ def time_raises():
 
         assert result.success is False
         assert result.error is not None
-        assert "ValueError" in result.error
+        assert isinstance(result.error, ValueError)
 
     def test_setup_raises_exception(self, temp_benchmark_dir, runner, discovery):
         """Test handling of exceptions in setup."""
@@ -476,7 +476,7 @@ class TestTracingBehavior:
     """Tests for execution tracing behavior."""
 
     def test_captures_deepest_call(self, temp_benchmark_dir, runner, discovery):
-        """Test that tracer captures deepest function call."""
+        """Test that tracer captures shallowest meaningful call (closest to benchmark)."""
         bench_file = temp_benchmark_dir / "deep.py"
         bench_file.write_text("""
 def inner():
@@ -495,8 +495,9 @@ def time_outer():
 
         assert result.success is True
         assert result.return_value == "deepest"
-        # Should capture inner function
-        assert result.function_name == "inner"
+        # After refactor: tracer captures shallowest call (benchmark function itself)
+        # since time_outer has explicit return statement
+        assert result.function_name == "time_outer"
 
     def test_expression_to_return_transformation(self, temp_benchmark_dir, runner, discovery):
         """Test that expression statements are transformed to returns."""
@@ -512,7 +513,8 @@ def time_expression():
         result = runner.run_benchmark(benchmarks[0])
 
         assert result.success is True
-        # Should capture one of the expressions
+        # Should capture the last expression via AST transformation
+        assert result.return_value == "final expression"
 
 
 class TestEdgeCases:
@@ -529,8 +531,10 @@ def time_empty():
         benchmarks = discovery.discover_all()
         result = runner.run_benchmark(benchmarks[0])
 
-        # Should succeed even if return is None
+        # Should succeed even if return is None (timing-only benchmark)
         assert result is not None
+        assert result.success is True
+        assert result.return_value is None
 
     def test_benchmark_with_globals(self, temp_benchmark_dir, runner, discovery):
         """Test benchmark using global variables."""

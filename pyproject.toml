@@ -7,7 +7,7 @@ authors = [
     { name = "James Hou", email = "jahou@caltech.edu" },
     { name = "Atharva Sehgal", email = "atharva.sehgal@gmail.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.8"
 license = { text = "MIT" }
 keywords = ["testing", "benchmarking", "snapshot", "asv", "regression-testing"]
 classifiers = [
@@ -15,12 +15,15 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Testing",
 ]
-dependencies = [
-    "numpy>=1.20.0",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/formulacode/snapshot-tester"
@@ -36,19 +39,20 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
     "ruff>=0.3.0",
-    "mypy>=1.8.0",
+    "mypy>=1.0.0",
+    "numpy>=1.15.0",  # For testing with numpy arrays (compatible with 2017+ versions)
     "shapely>=2.0.0",
-    "astropy>=7.1.1",
-    "scipy>=1.16.3",
-    "pandas>=2.3.3",
+    "astropy>=5.0.0",
+    "scipy>=1.9.0",
+    "pandas>=1.5.0",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py38"
 
 [tool.ruff.lint]
 select = [
@@ -62,10 +66,11 @@ select = [
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
+    "UP007", # Use X | Y for union types (not compatible with Python 3.8-3.9)
 ]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.8"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -78,3 +83,6 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --strict-markers"
 norecursedirs = ["tests/test_repos/*"]
+markers = [
+    "slow: marks tests as slow (e.g., full benchmark repository roundtrips)"
+]

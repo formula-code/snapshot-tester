@@ -2,14 +2,66 @@
 Comparison engine for snapshot testing.
 
 This module compares captured outputs with stored snapshots using
-numpy.allclose for numerical data and other strategies for different types.
+pure Python numerical comparisons with tolerances.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
-import numpy as np
+# Optional numpy import - only used for type detection when benchmarks return numpy arrays
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None  # type: ignore
+    HAS_NUMPY = False
+
+
+def _is_numpy_array(obj: Any) -> bool:
+    """Check if object is a numpy array without requiring numpy import."""
+    if HAS_NUMPY and np is not None:
+        return isinstance(obj, np.ndarray)
+    # Fallback: check by module and type name
+    obj_type = type(obj)
+    return obj_type.__module__ == 'numpy' and obj_type.__name__ == 'ndarray'
+
+
+def _is_numpy_scalar(obj: Any) -> bool:
+    """Check if object is a numpy scalar without requiring numpy import."""
+    if HAS_NUMPY and np is not None:
+        return isinstance(obj, np.number)
+    # Fallback: check by module
+    obj_type = type(obj)
+    return obj_type.__module__ == 'numpy'
+
+
+def _py_isclose(a: float, b: float, rtol: float = 1e-5, atol: float = 1e-8, equal_nan: bool = False) -> bool:
+    """Pure Python implementation of numpy.isclose for scalars."""
+    # Handle NaN and infinity values
+    try:
+        a_float = float(a)
+        b_float = float(b)
+        a_is_nan = math.isnan(a_float)
+        b_is_nan = math.isnan(b_float)
+        a_is_inf = math.isinf(a_float)
+        b_is_inf = math.isinf(b_float)
+    except (TypeError, ValueError):
+        return False
+
+    # Handle NaN
+    if equal_nan and a_is_nan and b_is_nan:
+        return True
+    if a_is_nan or b_is_nan:
+        return False
+
+    # Handle infinity: inf == inf, -inf == -inf, but inf != -inf
+    if a_is_inf or b_is_inf:
+        return a_float == b_float
+
+    # Standard tolerance check: |a - b| <= atol + rtol * |b|
+    return abs(a_float - b_float) <= atol + rtol * abs(b_float)
 
 
 @dataclass
@@ -18,9 +70,9 @@ class ComparisonResult:
 
     match: bool
     skipped: bool = False  # True if comparison was skipped (e.g., generators, unpicklable values)
-    tolerance_used: dict[str, float] | None = None
-    error_message: str | None = None
-    details: dict[str, Any] | None = None
+    tolerance_used: Optional[dict[str, float]] = None
+    error_message: Optional[str] = None
+    details: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -38,7 +90,7 @@ class ComparisonConfig:
 class Comparator:
     """Compares values with configurable tolerances."""
 
-    def __init__(self, config: ComparisonConfig | None = None):
+    def __init__(self, config: Optional[ComparisonConfig] = None):
         self.config = config or ComparisonConfig()
 
     def compare(self, actual: Any, expected: Any) -> ComparisonResult:
@@ -156,38 +208,62 @@ class Comparator:
 
         return ComparisonResult(match=True)
 
-    def _compare_numpy_arrays(self, actual: Any, expected: Any) -> ComparisonResult | None:
-        """Compare numpy arrays."""
-        if not (isinstance(actual, np.ndarray) and isinstance(expected, np.ndarray)):
+    def _compare_numpy_arrays(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+        """Compare numpy arrays using pure Python iteration."""
+        # Check if both are numpy arrays
+        if not (_is_numpy_array(actual) and _is_numpy_array(expected)):
             return None
 
+        # Get shape and dtype info
+        actual_shape = getattr(actual, 'shape', None)
+        expected_shape = getattr(expected, 'shape', None)
+        actual_dtype = getattr(actual, 'dtype', None)
+        expected_dtype = getattr(expected, 'dtype', None)
+
         # Check shapes if strict_shapes is enabled
-        if self.config.strict_shapes and actual.shape != expected.shape:
+        if self.config.strict_shapes and actual_shape != expected_shape:
             return ComparisonResult(
                 match=False,
-                error_message=f"Array shapes differ: {actual.shape} vs {expected.shape}",
+                error_message=f"Array shapes differ: {actual_shape} vs {expected_shape}",
             )
 
         # Check dtypes if strict_types is enabled
-        if self.config.strict_types and actual.dtype != expected.dtype:
+        if self.config.strict_types and actual_dtype != expected_dtype:
             return ComparisonResult(
                 match=False,
-                error_message=f"Array dtypes differ: {actual.dtype} vs {expected.dtype}",
+                error_message=f"Array dtypes differ: {actual_dtype} vs {expected_dtype}",
             )
 
         # Handle object arrays (like Shapely geometry arrays) - compare element-wise
-        if actual.dtype == object or expected.dtype == object:
+        if actual_dtype == object or expected_dtype == object:
             return self._compare_object_arrays(actual, expected)
 
-        # Use numpy.allclose for comparison of numeric arrays
+        # Compare numeric arrays element-wise using pure Python
         try:
-            match = np.allclose(
-                actual,
-                expected,
-                rtol=self.config.rtol,
-                atol=self.config.atol,
-                equal_nan=self.config.equal_nan,
-            )
+            # Flatten arrays to iterate through all elements
+            actual_flat = actual.flatten()
+            expected_flat = expected.flatten()
+
+            # Track differences for statistics
+            differences = []
+            all_close = True
+
+            for a_val, e_val in zip(actual_flat, expected_flat):
+                # Convert to Python float for comparison
+                try:
+                    a_float = float(a_val)
+                    e_float = float(e_val)
+                except (TypeError, ValueError):
+                    # Non-numeric value, fall back to equality
+                    if a_val != e_val:
+                        all_close = False
+                        break
+                    continue
+
+                # Use pure Python isclose
+                if not _py_isclose(a_float, e_float, self.config.rtol, self.config.atol, self.config.equal_nan):
+                    all_close = False
+                    differences.append(abs(a_float - e_float))
 
             tolerance_used = {
                 "rtol": self.config.rtol,
@@ -195,17 +271,16 @@ class Comparator:
                 "equal_nan": self.config.equal_nan,
             }
 
-            if not match:
-                # Calculate some statistics about the difference
-                diff = np.abs(actual - expected)
-                max_diff = np.max(diff)
-                mean_diff = np.mean(diff)
+            if not all_close:
+                # Calculate statistics
+                max_diff = max(differences) if differences else 0
+                mean_diff = sum(differences) / len(differences) if differences else 0
 
                 details = {
                     "max_difference": float(max_diff),
                     "mean_difference": float(mean_diff),
-                    "shape": actual.shape,
-                    "dtype": str(actual.dtype),
+                    "shape": actual_shape,
+                    "dtype": str(actual_dtype),
                 }
 
                 return ComparisonResult(
@@ -218,23 +293,19 @@ class Comparator:
                 return ComparisonResult(match=True, tolerance_used=tolerance_used)
 
         except Exception as e:
-            return ComparisonResult(match=False, error_message=f"numpy.allclose failed: {e}")
+            return ComparisonResult(match=False, error_message=f"Array comparison failed: {e}")
 
-    def _compare_scalars(self, actual: Any, expected: Any) -> ComparisonResult | None:
-        """Compare scalar values."""
+    def _compare_scalars(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+        """Compare scalar values using pure Python."""
         # Check if both are numeric scalars
         if not (self._is_numeric_scalar(actual) and self._is_numeric_scalar(expected)):
             return None
 
-        # Convert to numpy scalars for consistent comparison
-        actual_np = np.asarray(actual)
-        expected_np = np.asarray(expected)
-
-        # Use numpy.isclose for scalar comparison
+        # Use pure Python isclose for comparison
         try:
-            match = np.isclose(
-                actual_np,
-                expected_np,
+            match = _py_isclose(
+                float(actual),
+                float(expected),
                 rtol=self.config.rtol,
                 atol=self.config.atol,
                 equal_nan=self.config.equal_nan,
@@ -247,7 +318,7 @@ class Comparator:
             }
 
             if not match:
-                diff = abs(float(actual_np) - float(expected_np))
+                diff = abs(float(actual) - float(expected))
                 return ComparisonResult(
                     match=False,
                     tolerance_used=tolerance_used,
@@ -260,7 +331,7 @@ class Comparator:
         except Exception as e:
             return ComparisonResult(match=False, error_message=f"Scalar comparison failed: {e}")
 
-    def _compare_sequences(self, actual: Any, expected: Any) -> ComparisonResult | None:
+    def _compare_sequences(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare sequences (lists, tuples, etc.)."""
         if not (self._is_sequence(actual) and self._is_sequence(expected)):
             return None
@@ -288,7 +359,7 @@ class Comparator:
         else:
             return ComparisonResult(match=True)
 
-    def _compare_dicts(self, actual: Any, expected: Any) -> ComparisonResult | None:
+    def _compare_dicts(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare dictionaries."""
         if not (isinstance(actual, dict) and isinstance(expected, dict)):
             return None
@@ -320,8 +391,12 @@ class Comparator:
         else:
             return ComparisonResult(match=True)
 
-    def _compare_objects(self, actual: Any, expected: Any) -> ComparisonResult | None:
+    def _compare_objects(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare objects with __eq__ method."""
+        # Skip built-in container types - let specialized comparators handle them
+        if isinstance(actual, (list, tuple, dict)):
+            return None
+
         # Check if both objects have __eq__ defined (not just inherited from object)
         actual_type = type(actual)
         expected_type = type(expected)
@@ -332,11 +407,6 @@ class Comparator:
                 match=False,
                 error_message=f"Type mismatch: {actual_type.__name__} vs {expected_type.__name__}",
             )
-
-        # Skip lists/tuples that contain numpy arrays - let _compare_sequences handle them
-        if isinstance(actual, (list, tuple)) and len(actual) > 0:
-            if isinstance(actual[0], np.ndarray):
-                return None  # Let _compare_sequences handle this
 
         # Check if __eq__ is properly implemented (not just the default object.__eq__)
         has_custom_eq = False
@@ -372,13 +442,21 @@ class Comparator:
                 )
 
             # Handle cases where __eq__ returns an array (e.g., SkyCoord, pandas Series)
-            if isinstance(match, np.ndarray):
-                match = bool(match.all())
+            if _is_numpy_array(match):
+                # Call .all() method on the array if available
+                if hasattr(match, 'all'):
+                    match = bool(match.all())
+                else:
+                    # Fallback: iterate and check all elements
+                    match = all(bool(x) for x in match.flatten())
             # Handle cases where __eq__ returns a list/tuple of arrays (e.g., lists of numpy arrays)
             elif isinstance(match, (list, tuple)) and len(match) > 0:
                 # Check if it contains arrays (use len() to avoid evaluating the list as boolean)
-                if isinstance(match[0], np.ndarray):
-                    match = all(arr.all() if isinstance(arr, np.ndarray) else arr for arr in match)
+                if _is_numpy_array(match[0]):
+                    match = all(
+                        (arr.all() if hasattr(arr, 'all') else bool(arr)) if _is_numpy_array(arr) else arr
+                        for arr in match
+                    )
 
             return ComparisonResult(
                 match=match,
@@ -389,7 +467,7 @@ class Comparator:
                 match=False, error_message=f"Object comparison failed: {e}", details={"type": actual_type.__name__}
             )
 
-    def _compare_fallback(self, actual: Any, expected: Any) -> ComparisonResult | None:
+    def _compare_fallback(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Fallback comparison using == operator."""
         try:
             # Check type consistency
@@ -429,7 +507,7 @@ class Comparator:
                 error_message=f"Skipped: comparison failed for {type(actual).__name__}: {e}",
             )
 
-    def _compare_object_arrays(self, actual: np.ndarray, expected: np.ndarray) -> ComparisonResult:
+    def _compare_object_arrays(self, actual: Any, expected: Any) -> ComparisonResult:
         """Compare numpy object arrays element-wise."""
         # Flatten arrays for easier comparison
         actual_flat = actual.flatten()
@@ -460,7 +538,14 @@ class Comparator:
 
     def _is_numeric_scalar(self, value: Any) -> bool:
         """Check if value is a numeric scalar."""
-        return isinstance(value, (int, float, np.number)) and np.isscalar(value)
+        # Check Python built-in numeric types
+        if isinstance(value, (int, float)):
+            return True
+        # Check numpy scalar types if available
+        if _is_numpy_scalar(value):
+            # Check if it's actually a scalar (not an array)
+            return not hasattr(value, 'shape') or value.shape == ()
+        return False
 
     def _is_sequence(self, value: Any) -> bool:
         """Check if value is a sequence (but not a string or dict)."""

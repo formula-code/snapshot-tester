@@ -12,7 +12,7 @@ import logging
 import sys
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .discovery import BenchmarkDiscovery, BenchmarkInfo
 from .rng_patcher import RNGPatcher
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class BenchmarkRunner:
     """Executes ASV benchmarks with tracing enabled."""
 
-    def __init__(self, benchmark_dir: Path, project_dir: Path | None = None, seed: int = 42):
+    def __init__(self, benchmark_dir: Path, project_dir: Optional[Path] = None, seed: int = 42):
         self.benchmark_dir = Path(benchmark_dir)
         self.project_dir = project_dir or benchmark_dir.parent
         self.discovery = BenchmarkDiscovery(self.benchmark_dir)
@@ -82,8 +82,8 @@ class BenchmarkRunner:
             return None
 
     def run_benchmark(
-        self, benchmark: BenchmarkInfo, parameters: tuple[Any, ...] | None = None
-    ) -> TraceResult | None:
+        self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
+    ) -> Optional[TraceResult]:
         """Run a single benchmark with tracing."""
 
         try:
@@ -99,6 +99,17 @@ class BenchmarkRunner:
                 if runtime_params:
                     benchmark.params = runtime_params
                     benchmark.needs_runtime_eval = False  # Mark as evaluated
+
+            # Handle parameterized benchmarks called without parameters
+            # If benchmark has params but none provided, use first param combination
+            if benchmark.params and parameters is None and benchmark.benchmark_type == "method":
+                param_combinations = self.get_param_combinations(benchmark)
+                if param_combinations:
+                    parameters = param_combinations[0]
+                    logger.warning(
+                        f"Benchmark {benchmark.name} has parameters but none provided. "
+                        f"Using first parameter combination: {parameters}"
+                    )
 
             if benchmark.benchmark_type == "function":
                 return self._run_function_benchmark(module, benchmark)
@@ -127,7 +138,7 @@ class BenchmarkRunner:
             )
 
     def run_all_benchmarks(
-        self, filter_pattern: str | None = None
+        self, filter_pattern: Optional[str] = None
     ) -> dict[str, list[TraceResult]]:
         """Run all discovered benchmarks."""
 
@@ -234,7 +245,7 @@ class BenchmarkRunner:
 
     def _run_function_benchmark(
         self, module: Any, benchmark: BenchmarkInfo
-    ) -> TraceResult | None:
+    ) -> Optional[TraceResult]:
         """Run a function-level benchmark."""
 
         # Get the benchmark function
@@ -273,6 +284,9 @@ class BenchmarkRunner:
                         return_stmt = ast.Return(value=last_stmt.value)
                         func_def.body[-1] = return_stmt
 
+                        # Fix missing line numbers for the new AST nodes
+                        ast.fix_missing_locations(tree)
+
                         # Compile the modified function
                         modified_code = compile(tree, f"<modified_{benchmark.name}>", "exec")
 
@@ -290,7 +304,7 @@ class BenchmarkRunner:
                         result = TraceResult(
                             return_value=result_value,
                             function_name=benchmark.name,
-                            module_path=benchmark.module_path,
+                            module_name=benchmark.module_path,
                             depth=0,
                             success=True,
                         )
@@ -309,6 +323,18 @@ class BenchmarkRunner:
             # Stop tracing and get result
             result = self.tracer.stop_tracing()
 
+            # If tracer didn't capture anything, return success with no data
+            # (e.g., timing-only benchmarks, state modification benchmarks)
+            if result is None:
+                return TraceResult(
+                    return_value=None,
+                    function_name=benchmark.name,
+                    module_name=benchmark.module_path,
+                    depth=0,
+                    success=True,
+                    error=None,
+                )
+
             return result
 
         except Exception as e:
@@ -326,8 +352,8 @@ class BenchmarkRunner:
             )
 
     def _run_method_benchmark(
-        self, module: Any, benchmark: BenchmarkInfo, parameters: tuple[Any, ...] | None = None
-    ) -> TraceResult | None:
+        self, module: Any, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
+    ) -> Optional[TraceResult]:
         """Run a method-level benchmark."""
 
         # Get the benchmark class
@@ -446,6 +472,19 @@ class BenchmarkRunner:
 
             # Stop tracing and get result
             result = self.tracer.stop_tracing()
+
+            # If tracer didn't capture anything, return success with no data
+            # (e.g., timing-only benchmarks, state modification benchmarks)
+            if result is None:
+                return TraceResult(
+                    return_value=None,
+                    function_name=benchmark.name,
+                    module_name=benchmark.module_path,
+                    depth=0,
+                    success=True,
+                    error=None,
+                )
+
             return result
 
         except Exception as e:
@@ -462,7 +501,7 @@ class BenchmarkRunner:
                 error=e,
             )
 
-    def get_benchmark_info(self, benchmark_name: str) -> BenchmarkInfo | None:
+    def get_benchmark_info(self, benchmark_name: str) -> Optional[BenchmarkInfo]:
         """Get information about a specific benchmark."""
         return self.discovery.get_benchmark_by_name(benchmark_name)
 
