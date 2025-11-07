@@ -11,6 +11,7 @@ import importlib.util
 import logging
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,12 +25,19 @@ logger = logging.getLogger(__name__)
 class BenchmarkRunner:
     """Executes ASV benchmarks with tracing enabled."""
 
-    def __init__(self, benchmark_dir: Path, project_dir: Optional[Path] = None, seed: int = 42):
+    def __init__(
+        self,
+        benchmark_dir: Path,
+        project_dir: Optional[Path] = None,
+        seed: int = 42,
+        timeout: Optional[float] = None,
+    ):
         self.benchmark_dir = Path(benchmark_dir)
         self.project_dir = project_dir or benchmark_dir.parent
         self.discovery = BenchmarkDiscovery(self.benchmark_dir)
         self.tracer = ExecutionTracer()
         self.seed = seed  # Deterministic seed for reproducibility
+        self.timeout = timeout  # Maximum execution time in seconds
 
         # Initialize RNG patcher for deterministic execution
         self.rng_patcher = RNGPatcher(seed=seed)
@@ -81,10 +89,65 @@ class BenchmarkRunner:
             logger.warning(f"Failed to evaluate params at runtime for {benchmark.name}: {e}")
             return None
 
+    def _run_with_timeout(
+        self,
+        benchmark: BenchmarkInfo,
+        parameters: Optional[tuple[Any, ...]] = None,
+    ) -> Optional[TraceResult]:
+        """
+        Execute benchmark with timeout.
+
+        Returns None if timeout is exceeded, otherwise returns TraceResult.
+        """
+        if self.timeout is None:
+            # No timeout configured, run directly
+            return self._run_benchmark_internal(benchmark, parameters)
+
+        # Use ThreadPoolExecutor to run with timeout
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(self._run_benchmark_internal, benchmark, parameters)
+        try:
+            result = future.result(timeout=self.timeout)
+            executor.shutdown(wait=True)
+            return result
+        except FuturesTimeoutError:
+            logger.warning(
+                f"Benchmark {benchmark.name} timed out after {self.timeout} seconds"
+            )
+            # Cancel the future and shutdown without waiting
+            future.cancel()
+            executor.shutdown(wait=False)
+            # Return a failed trace result for timeout
+            return TraceResult(
+                return_value=None,
+                function_name=benchmark.name,
+                module_name=benchmark.module_path,
+                depth=0,
+                success=False,
+                error=TimeoutError(f"Benchmark execution exceeded {self.timeout} seconds"),
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in timeout wrapper: {e}")
+            executor.shutdown(wait=False)
+            return TraceResult(
+                return_value=None,
+                function_name=benchmark.name,
+                module_name=benchmark.module_path,
+                depth=0,
+                success=False,
+                error=e,
+            )
+
     def run_benchmark(
         self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
     ) -> Optional[TraceResult]:
-        """Run a single benchmark with tracing."""
+        """Run a single benchmark with tracing and optional timeout."""
+        return self._run_with_timeout(benchmark, parameters)
+
+    def _run_benchmark_internal(
+        self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
+    ) -> Optional[TraceResult]:
+        """Run a single benchmark with tracing (internal implementation without timeout wrapper)."""
 
         try:
             # Reset random state before each benchmark run for determinism
@@ -525,7 +588,9 @@ class BenchmarkRunner:
         """Categorize errors for better handling."""
         error_str = str(error).lower()
 
-        if "missing" in error_str and "required positional argument" in error_str:
+        if isinstance(error, TimeoutError):
+            return "timeout_error"
+        elif "missing" in error_str and "required positional argument" in error_str:
             return "parameter_error"
         elif "no module named" in error_str:
             return "missing_dependency"

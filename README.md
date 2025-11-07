@@ -19,7 +19,7 @@ This tool integrates with ASV (airspeed-velocity) benchmarks to:
 uv pip install -e .
 
 # Or install directly from repository
-uv pip install git+https://github.com/formulacode/snapshot-tester.git
+uv pip install git+https://github.com/formula-code/snapshot-tester.git
 ```
 
 ### Using pip
@@ -29,7 +29,7 @@ uv pip install git+https://github.com/formulacode/snapshot-tester.git
 pip install -e .
 
 # Or install directly
-pip install git+https://github.com/formulacode/snapshot-tester.git
+pip install git+https://github.com/formula-code/snapshot-tester.git
 ```
 
 ## Usage

@@ -11,7 +11,7 @@ for repo in tests/test_repos/*_benchmarks/; do
     echo "Listing benchmarks..."
     snapshot-tool list . 2>&1 | head -20
     echo "Capturing snapshots..."
-    snapshot-tool capture .
+    snapshot-tool capture . --timeout 10
     echo "Verifying snapshots..."
     snapshot-tool verify .
     echo "Completed processing for $repo"

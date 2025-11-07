@@ -73,6 +73,12 @@ class SnapshotCLI:
         capture_parser.add_argument(
             "--snapshot-dir", type=Path, help="Directory to store snapshots"
         )
+        capture_parser.add_argument(
+            "--timeout",
+            type=float,
+            default=300.0,
+            help="Maximum execution time per benchmark in seconds (default: 300)",
+        )
         capture_parser.set_defaults(func=self._capture_command)
 
         # Verify command
@@ -96,6 +102,12 @@ class SnapshotCLI:
             type=Path,
             default=Path("summary.json"),
             help="Path to write summary JSON file (default: summary.json)",
+        )
+        verify_parser.add_argument(
+            "--timeout",
+            type=float,
+            default=300.0,
+            help="Maximum execution time per benchmark in seconds (default: 300)",
         )
         verify_parser.set_defaults(func=self._verify_command)
 
@@ -141,12 +153,15 @@ class SnapshotCLI:
 
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
+        timeout = args.timeout if hasattr(args, 'timeout') else None
 
         logger.info(f"Capturing snapshots from {benchmark_dir}")
         logger.info(f"Storing snapshots in {snapshot_dir}")
+        if timeout:
+            logger.info(f"Timeout per benchmark: {timeout} seconds")
 
         # Initialize components
-        runner = BenchmarkRunner(benchmark_dir)
+        runner = BenchmarkRunner(benchmark_dir, timeout=timeout)
         storage = SnapshotManager(snapshot_dir)
 
         # Discover benchmarks
@@ -259,12 +274,15 @@ class SnapshotCLI:
 
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
+        timeout = args.timeout if hasattr(args, 'timeout') else None
 
         logger.info(f"Verifying benchmarks in {benchmark_dir}")
         logger.info(f"Comparing against snapshots in {snapshot_dir}")
+        if timeout:
+            logger.info(f"Timeout per benchmark: {timeout} seconds")
 
         # Initialize components
-        runner = BenchmarkRunner(benchmark_dir)
+        runner = BenchmarkRunner(benchmark_dir, timeout=timeout)
         storage = SnapshotManager(snapshot_dir)
 
         # Update comparison config
