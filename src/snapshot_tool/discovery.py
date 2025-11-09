@@ -28,6 +28,7 @@ class BenchmarkInfo:
     param_names: Optional[list[str]] = None
     setup_method: Optional[str] = None
     has_setup: bool = False
+    has_setup_cache: bool = False  # Whether class has setup_cache method
     method_params: Optional[list[str]] = None  # Parameters expected by the method itself
     needs_runtime_eval: bool = False  # Whether params need runtime evaluation
 
@@ -104,6 +105,7 @@ class BenchmarkDiscovery:
         params = None
         param_names = None
         setup_method = None
+        has_setup_cache = False
 
         # Check if we need to evaluate params at runtime
         needs_runtime_eval = False
@@ -124,8 +126,11 @@ class BenchmarkDiscovery:
                         elif target.id == "param_names" and isinstance(node.value, ast.List):
                             param_names = self._extract_param_names(node.value)
 
-            elif isinstance(node, ast.FunctionDef) and node.name == "setup":
-                setup_method = node.name
+            elif isinstance(node, ast.FunctionDef):
+                if node.name == "setup":
+                    setup_method = node.name
+                elif node.name == "setup_cache":
+                    has_setup_cache = True
 
         # Find benchmark methods in the class
         for node in class_node.body:
@@ -143,6 +148,7 @@ class BenchmarkDiscovery:
                         param_names=param_names,
                         setup_method=setup_method,
                         has_setup=setup_method is not None,
+                        has_setup_cache=has_setup_cache,
                         method_params=method_params,
                         needs_runtime_eval=needs_runtime_eval,
                     )

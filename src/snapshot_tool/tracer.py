@@ -258,6 +258,10 @@ class ExecutionTracer:
             return False
 
         module_name = frame.f_globals["__name__"]
+        # Skip if module_name is None (can happen in some execution contexts)
+        if module_name is None:
+            return False
+        
         function_name = frame.f_code.co_name
 
         # Skip excluded modules (manual list)
@@ -339,7 +343,7 @@ class ExecutionTracer:
         # Check if it's an instance of a user-defined class
         if hasattr(value, "__class__"):
             class_name = value.__class__.__name__
-            module_name = getattr(value.__class__, "__module__", "")
+            module_name = getattr(value.__class__, "__module__", "") or ""
 
             # Skip built-in types and common library types
             if module_name in ("builtins", "types", "collections", "typing"):
@@ -350,7 +354,7 @@ class ExecutionTracer:
                 return False
 
             # Skip numpy arrays and other common scientific computing types
-            if module_name.startswith("numpy"):
+            if module_name and module_name.startswith("numpy"):
                 return False
 
             # It's likely a user-defined class instance

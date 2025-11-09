@@ -44,6 +44,9 @@ class BenchmarkRunner:
 
         # Cache for loaded modules
         self._module_cache: dict[str, Any] = {}
+        
+        # Cache for setup_cache results (per class instance)
+        self._setup_cache: dict[str, Any] = {}
 
         # Add project directory to Python path for imports
         if str(self.project_dir) not in sys.path:
@@ -284,13 +287,16 @@ class BenchmarkRunner:
         # in benchmark files (e.g., `from .pandas_vb_common import setup`).
         import types
         parts = module_path.split('.')
+        
+        # Create parent packages if they don't exist
         for i in range(1, len(parts)):
             pkg_name = '.'.join(parts[:i])
             if pkg_name not in sys.modules:
                 pkg = types.ModuleType(pkg_name)
                 # Mark as a package by setting __path__ to the directory
                 pkg_dir = self.benchmark_dir / '/'.join(parts[:i])
-                pkg.__path__ = [str(pkg_dir)]
+                if pkg_dir.exists() and pkg_dir.is_dir():
+                    pkg.__path__ = [str(pkg_dir)]
                 sys.modules[pkg_name] = pkg
 
         # Load the module
@@ -299,6 +305,40 @@ class BenchmarkRunner:
             raise ImportError(f"Could not load module: {module_path}")
 
         module = importlib.util.module_from_spec(spec)
+        
+        # Set __package__ attribute for relative imports to work
+        # This is critical for modules using relative imports like `from .utils import ...`
+        if len(parts) > 1:
+            # Module is in a subpackage - parent is the package
+            module.__package__ = '.'.join(parts[:-1])
+        else:
+            # Module is at root of benchmark_dir
+            # If benchmark_dir has __init__.py, it's a package
+            # Modules in it need __package__ set to allow relative imports
+            # Use benchmark_dir name as package name
+            if (self.benchmark_dir / "__init__.py").exists():
+                # benchmark_dir is a package - use its name as package name
+                module.__package__ = self.benchmark_dir.name
+            else:
+                # No __init__.py, but modules might still use relative imports
+                # Create a synthetic package based on directory name
+                module.__package__ = self.benchmark_dir.name
+        
+        # Add module to sys.modules before execution (required for relative imports)
+        sys.modules[module_path] = module
+        
+        # Ensure the package exists in sys.modules for relative imports to work
+        if module.__package__ and module.__package__ not in sys.modules:
+            pkg = types.ModuleType(module.__package__)
+            # Set __path__ to benchmark_dir or the appropriate parent directory
+            if len(parts) > 1:
+                pkg_dir = self.benchmark_dir / '/'.join(parts[:-1])
+            else:
+                pkg_dir = self.benchmark_dir
+            if pkg_dir.exists() and pkg_dir.is_dir():
+                pkg.__path__ = [str(pkg_dir)]
+            sys.modules[module.__package__] = pkg
+        
         spec.loader.exec_module(module)
 
         # Cache the module
@@ -473,6 +513,25 @@ class BenchmarkRunner:
 
         # Instantiate the class
         instance = benchmark_class()
+        
+        # Run setup_cache if it exists (once per class, cached)
+        cached_state = None
+        if benchmark.has_setup_cache:
+            cache_key = f"{benchmark.module_path}.{benchmark.class_name}"
+            if cache_key not in self._setup_cache:
+                # Reset random state before setup_cache to ensure determinism
+                self._reset_random_state()
+                setup_cache_method = getattr(instance, "setup_cache", None)
+                if setup_cache_method:
+                    try:
+                        cached_state = setup_cache_method()
+                        self._setup_cache[cache_key] = cached_state
+                        logger.debug(f"Cached setup_cache result for {cache_key}")
+                    except Exception as e:
+                        logger.warning(f"setup_cache failed for {benchmark.class_name}: {e}")
+                        traceback.print_exc()
+            else:
+                cached_state = self._setup_cache[cache_key]
 
         # Run setup if it exists
         if benchmark.has_setup and benchmark.setup_method:
@@ -481,16 +540,87 @@ class BenchmarkRunner:
 
             setup_method = getattr(instance, benchmark.setup_method, None)
             if setup_method:
+                # Check if setup expects cached state as first parameter
+                # Inspect the setup method's signature
+                import inspect
+                setup_expects_state = False
+                if cached_state is not None:
+                    try:
+                        sig = inspect.signature(setup_method)
+                        params = list(sig.parameters.keys())
+                        # Skip 'self' if present
+                        if params and params[0] == 'self':
+                            params = params[1:]
+                        # Check if first parameter is 'state' or '_state'
+                        if params and (params[0] == 'state' or params[0] == '_state'):
+                            setup_expects_state = True
+                    except (ValueError, TypeError):
+                        # If signature inspection fails, try heuristic
+                        # If we have cached_state and setup has parameters, assume it expects state
+                        pass
+                
                 if parameters:
                     # Call setup with parameters
-                    if benchmark.param_names:
+                    if setup_expects_state and cached_state is not None:
+                        # Pass cached state as first argument, then parameters
+                        try:
+                            setup_method(cached_state, *parameters)
+                        except NotImplementedError:
+                            # Setup explicitly indicates this parameter combination is not supported
+                            # Skip this benchmark run
+                            logger.debug(f"Setup raised NotImplementedError for parameters {parameters}, skipping")
+                            return TraceResult(
+                                return_value=None,
+                                function_name=benchmark.name,
+                                module_name=benchmark.module_path,
+                                depth=0,
+                                success=False,
+                                error=NotImplementedError(f"Parameter combination {parameters} not supported"),
+                            )
+                        except TypeError as e:
+                            # Try without state if that fails
+                            try:
+                                setup_method(*parameters)
+                            except NotImplementedError:
+                                logger.debug(f"Setup raised NotImplementedError for parameters {parameters}, skipping")
+                                return TraceResult(
+                                    return_value=None,
+                                    function_name=benchmark.name,
+                                    module_name=benchmark.module_path,
+                                    depth=0,
+                                    success=False,
+                                    error=NotImplementedError(f"Parameter combination {parameters} not supported"),
+                                )
+                            except TypeError:
+                                logger.warning(f"Setup method failed with state and parameters: {e}")
+                    elif benchmark.param_names:
                         # Use param_names for keyword arguments
                         try:
                             setup_method(*parameters)
+                        except NotImplementedError:
+                            logger.debug(f"Setup raised NotImplementedError for parameters {parameters}, skipping")
+                            return TraceResult(
+                                return_value=None,
+                                function_name=benchmark.name,
+                                module_name=benchmark.module_path,
+                                depth=0,
+                                success=False,
+                                error=NotImplementedError(f"Parameter combination {parameters} not supported"),
+                            )
                         except TypeError as e:
                             try:
                                 param_dict = dict(zip(benchmark.param_names, parameters))
                                 setup_method(**param_dict)
+                            except NotImplementedError:
+                                logger.debug(f"Setup raised NotImplementedError for parameters {parameters}, skipping")
+                                return TraceResult(
+                                    return_value=None,
+                                    function_name=benchmark.name,
+                                    module_name=benchmark.module_path,
+                                    depth=0,
+                                    success=False,
+                                    error=NotImplementedError(f"Parameter combination {parameters} not supported"),
+                                )
                             except TypeError:
                                 logger.warning(
                                     f"Setup method failed with parameters {parameters}: {e}"
@@ -503,6 +633,16 @@ class BenchmarkRunner:
                         # No param_names - pass parameters as positional arguments
                         try:
                             setup_method(*parameters)
+                        except NotImplementedError:
+                            logger.debug(f"Setup raised NotImplementedError for parameters {parameters}, skipping")
+                            return TraceResult(
+                                return_value=None,
+                                function_name=benchmark.name,
+                                module_name=benchmark.module_path,
+                                depth=0,
+                                success=False,
+                                error=NotImplementedError(f"Parameter combination {parameters} not supported"),
+                            )
                         except TypeError as e:
                             logger.warning(f"Setup method failed with parameters {parameters}: {e}")
                             try:
@@ -510,22 +650,81 @@ class BenchmarkRunner:
                             except TypeError:
                                 logger.warning("Setup method also failed without parameters")
                 else:
-                    # Call setup without parameters
-                    try:
-                        setup_method()
-                    except TypeError as e:
-                        logger.warning(f"Setup method failed: {e}")
+                    # Call setup without parameters (or with state if it expects it)
+                    if setup_expects_state and cached_state is not None:
+                        try:
+                            setup_method(cached_state)
+                        except NotImplementedError:
+                            logger.debug(f"Setup raised NotImplementedError, skipping")
+                            return TraceResult(
+                                return_value=None,
+                                function_name=benchmark.name,
+                                module_name=benchmark.module_path,
+                                depth=0,
+                                success=False,
+                                error=NotImplementedError("Parameter combination not supported"),
+                            )
+                        except TypeError as e:
+                            logger.warning(f"Setup method failed with state: {e}")
+                            try:
+                                setup_method()
+                            except TypeError:
+                                logger.warning("Setup method also failed without state")
+                    else:
+                        try:
+                            setup_method()
+                        except NotImplementedError:
+                            logger.debug(f"Setup raised NotImplementedError, skipping")
+                            return TraceResult(
+                                return_value=None,
+                                function_name=benchmark.name,
+                                module_name=benchmark.module_path,
+                                depth=0,
+                                success=False,
+                                error=NotImplementedError("Parameter combination not supported"),
+                            )
+                        except TypeError as e:
+                            logger.warning(f"Setup method failed: {e}")
 
         # Start tracing
         self.tracer.start_tracing()
 
         try:
+            # Check if benchmark method expects cached state as first parameter
+            # Inspect the benchmark method's signature
+            import inspect
+            method_expects_state = False
+            if cached_state is not None:
+                try:
+                    sig = inspect.signature(benchmark_method)
+                    params = list(sig.parameters.keys())
+                    # Skip 'self' if present
+                    if params and params[0] == 'self':
+                        params = params[1:]
+                    # Check if first parameter is 'state' or '_state'
+                    if params and (params[0] == 'state' or params[0] == '_state'):
+                        method_expects_state = True
+                except (ValueError, TypeError):
+                    # If signature inspection fails, fall back to method_params check
+                    method_expects_state = (
+                        benchmark.method_params 
+                        and len(benchmark.method_params) > 0 
+                        and (benchmark.method_params[0] == "state" or benchmark.method_params[0] == "_state")
+                    )
+            
             # Execute the benchmark method with parameters
             # Rule:
+            # - If method expects state and we have cached_state, pass state first
             # - If method defines its own parameters (method_params), pass them regardless of param_names
             # - Else if there are no param_names (unnamed param pattern), pass them
             # - Otherwise, call without parameters (setup-only pattern)
-            if parameters and (
+            if method_expects_state and cached_state is not None:
+                # Pass cached state as first argument, then parameters
+                if parameters:
+                    benchmark_method(instance, cached_state, *parameters)
+                else:
+                    benchmark_method(instance, cached_state)
+            elif parameters and (
                 (benchmark.method_params and len(benchmark.method_params) > 0)
                 or (not benchmark.param_names)
             ):
