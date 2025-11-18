@@ -20,6 +20,7 @@ from .config import ConfigManager
 from .discovery import BenchmarkDiscovery
 from .runner import BenchmarkRunner
 from .storage import SnapshotManager
+from .transitions import compute_transitions
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,32 @@ class SnapshotCLI:
             help="Maximum execution time per benchmark in seconds (default: 300)",
         )
         verify_parser.set_defaults(func=self._verify_command)
+
+        # Baseline command
+        baseline_parser = subparsers.add_parser(
+            "baseline", help="Record baseline pass/fail statuses against snapshots"
+        )
+        baseline_parser.add_argument(
+            "benchmark_dir", type=Path, help="Directory containing benchmark files"
+        )
+        baseline_parser.add_argument("--filter", help="Filter benchmarks by name pattern")
+        baseline_parser.add_argument(
+            "--snapshot-dir", type=Path, help="Directory containing snapshots"
+        )
+        baseline_parser.add_argument(
+            "--tolerance",
+            nargs=2,
+            metavar=("RTOL", "ATOL"),
+            type=float,
+            help="Relative and absolute tolerance for comparison",
+        )
+        baseline_parser.add_argument(
+            "--timeout",
+            type=float,
+            default=300.0,
+            help="Maximum execution time per benchmark in seconds (default: 300)",
+        )
+        baseline_parser.set_defaults(func=self._baseline_command)
 
         # List command
         list_parser = subparsers.add_parser("list", help="List available benchmarks")
@@ -308,6 +335,8 @@ class SnapshotCLI:
         passed_tests = 0
         failed_tests = 0
         skipped_tests = 0
+        # Per-test status for baseline transitions (values: 'pass' | 'fail' | 'skip')
+        per_test_status: dict[str, str] = {}
 
         for benchmark in benchmarks:
             if self.config.should_exclude_benchmark(benchmark.name):
@@ -335,6 +364,13 @@ class SnapshotCLI:
                         logger.info(f"  Skipping (no snapshot) with params: {params}")
                         skipped_tests += 1
                         total_tests += 1
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "skip"
                         continue
 
                     _, metadata = snapshot_data
@@ -344,6 +380,13 @@ class SnapshotCLI:
                         logger.info(f"  Skipping failed capture with params: {params}")
                         skipped_tests += 1
                         total_tests += 1
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "skip"
                         continue
 
                     # Run benchmark
@@ -351,9 +394,16 @@ class SnapshotCLI:
                     if not result or not result.success:
                         # Benchmark failed during verify but succeeded during capture
                         # This is a real failure (non-deterministic benchmark or environment change)
-                        logger.error(f"  ✗ Failed to run with params: {params} (succeeded during capture)")
+                        logger.error(f"  [FAIL] Failed to run with params: {params} (succeeded during capture)")
                         failed_tests += 1
                         total_tests += 1
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "fail"
                         continue
 
                     expected_value, metadata = snapshot_data
@@ -365,19 +415,40 @@ class SnapshotCLI:
                     if comparison.skipped:
                         skipped_tests += 1
                         if not self.config.quiet:
-                            logger.info(f"  ⊘ Skipped with params: {params}")
+                            logger.info(f"  [SKIP] Skipped with params: {params}")
                             if self.config.verbose and comparison.details:
                                 logger.debug(f"    Reason: {comparison.details}")
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "skip"
                     elif comparison.match:
                         passed_tests += 1
                         if not self.config.quiet:
-                            logger.info(f"  ✓ Passed with params: {params}")
+                            logger.info(f"  [PASS] Passed with params: {params}")
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "pass"
                     else:
                         failed_tests += 1
-                        logger.error(f"  ✗ Failed with params: {params}")
+                        logger.error(f"  [FAIL] Failed with params: {params}")
                         logger.error(f"    Error: {comparison.error_message}")
                         if self.config.verbose and comparison.details:
                             logger.debug(f"    Details: {comparison.details}")
+                        test_id = storage.get_test_id(
+                            module_path=benchmark.module_path,
+                            benchmark_name=benchmark.name,
+                            parameters=tuple(params),
+                            class_name=benchmark.class_name,
+                        )
+                        per_test_status[test_id] = "fail"
             else:
                 # Check if snapshot exists
                 snapshot_data = storage.load_snapshot(
@@ -392,6 +463,13 @@ class SnapshotCLI:
                     logger.info("  Skipping (no snapshot)")
                     skipped_tests += 1
                     total_tests += 1
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "skip"
                     continue
 
                 _, metadata = snapshot_data
@@ -401,6 +479,13 @@ class SnapshotCLI:
                     logger.info("  Skipping failed capture")
                     skipped_tests += 1
                     total_tests += 1
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "skip"
                     continue
 
                 # Verify without parameters
@@ -408,9 +493,16 @@ class SnapshotCLI:
                 if not result or not result.success:
                     # Benchmark failed during verify but succeeded during capture
                     # This is a real failure (non-deterministic benchmark or environment change)
-                    logger.error("  ✗ Failed to run (succeeded during capture)")
+                    logger.error("  [FAIL] Failed to run (succeeded during capture)")
                     failed_tests += 1
                     total_tests += 1
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "fail"
                     continue
 
                 expected_value, metadata = snapshot_data
@@ -421,19 +513,40 @@ class SnapshotCLI:
                 if comparison.skipped:
                     skipped_tests += 1
                     if not self.config.quiet:
-                        logger.info("  ⊘ Skipped")
+                        logger.info("  [SKIP] Skipped")
                         if self.config.verbose and comparison.details:
                             logger.debug(f"    Reason: {comparison.details}")
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "skip"
                 elif comparison.match:
                     passed_tests += 1
                     if not self.config.quiet:
-                        logger.info("  ✓ Passed")
+                        logger.info("  [PASS] Passed")
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "pass"
                 else:
                     failed_tests += 1
-                    logger.error("  ✗ Failed")
+                    logger.error("  [FAIL] Failed")
                     logger.error(f"    Error: {comparison.error_message}")
                     if self.config.verbose and comparison.details:
                         logger.debug(f"    Details: {comparison.details}")
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=(),
+                        class_name=benchmark.class_name,
+                    )
+                    per_test_status[test_id] = "fail"
 
         logger.info("\nVerification complete:")
         logger.info(f"  Total tests: {total_tests}")
@@ -441,7 +554,7 @@ class SnapshotCLI:
         logger.info(f"  Failed: {failed_tests}")
         logger.info(f"  Skipped: {skipped_tests}")
 
-        # Write summary.json
+        # Write summary.json (plus baseline transition metrics, if available)
         summary = {
             "total": total_tests,
             "passed": passed_tests,
@@ -452,6 +565,28 @@ class SnapshotCLI:
             "benchmark_dir": str(benchmark_dir),
         }
 
+        # If baseline file exists, compute transition buckets via modular function
+        baseline_payload = storage.read_baseline()
+        if baseline_payload and isinstance(baseline_payload.get("entries"), dict):
+            baseline_entries: dict[str, str] = baseline_payload["entries"]
+            transitions = compute_transitions(baseline_entries, per_test_status)
+            summary.update(transitions)
+
+            # Also surface in console as requested
+            logger.info("\nBaseline transitions:")
+            for k in [
+                "fail-to-pass",
+                "fail-to-fail",
+                "fail-to-skip",
+                "pass-to-pass",
+                "pass-to-fail",
+                "pass-to-skip",
+                "skip-to-pass",
+                "skip-to-fail",
+                "skip-to-skip",
+            ]:
+                logger.info(f"  {k}: {summary.get(k, 0)}")
+
         summary_path = args.summary if hasattr(args, 'summary') else Path("summary.json")
         try:
             with open(summary_path, "w") as f:
@@ -461,6 +596,183 @@ class SnapshotCLI:
             logger.warning(f"Failed to write summary.json: {e}")
 
         return 0 if failed_tests == 0 else 1
+
+    def _baseline_command(self, args) -> int:
+        """Handle the baseline command.
+
+        Runs verification-like checks and records per-test status as either
+        "pass" or "failed_to_pass" (the latter includes failures and skips).
+        The results are stored persistently in the snapshot directory and
+        used by subsequent verify runs to compute transition metrics.
+        """
+        # Update config from command line
+        if args.snapshot_dir:
+            self.config.snapshot_dir = str(args.snapshot_dir)
+        if args.verbose:
+            self.config.verbose = True
+        if args.quiet:
+            self.config.quiet = True
+
+        benchmark_dir = args.benchmark_dir
+        snapshot_dir = self.config.get_snapshot_dir()
+        timeout = args.timeout if hasattr(args, 'timeout') else None
+
+        logger.info(f"Baselining benchmarks in {benchmark_dir}")
+        logger.info(f"Using snapshots in {snapshot_dir}")
+        if timeout:
+            logger.info(f"Timeout per benchmark: {timeout} seconds")
+
+        # Initialize components
+        runner = BenchmarkRunner(benchmark_dir, timeout=timeout)
+        storage = SnapshotManager(snapshot_dir)
+
+        # Comparison settings
+        comp_config = ComparisonConfig()
+        if args.tolerance:
+            comp_config.rtol = args.tolerance[0]
+            comp_config.atol = args.tolerance[1]
+        else:
+            comp_config.rtol = self.config.tolerance["rtol"]
+            comp_config.atol = self.config.tolerance["atol"]
+            comp_config.equal_nan = self.config.tolerance.get("equal_nan", False)
+        comparator = Comparator(comp_config)
+
+        # Discover benchmarks
+        discovery = BenchmarkDiscovery(benchmark_dir)
+        benchmarks = discovery.discover_all()
+        if args.filter:
+            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
+
+        # Collect entries
+        total = 0
+        passed = 0
+        failed = 0
+        skipped = 0
+        entries: dict[str, str] = {}
+
+        for benchmark in benchmarks:
+            if self.config.should_exclude_benchmark(benchmark.name):
+                if not self.config.quiet:
+                    logger.info(f"Skipping excluded benchmark: {benchmark.name}")
+                continue
+
+            logger.info(f"Baselining: {benchmark.module_path}.{benchmark.name}")
+
+            if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
+                param_combinations = runner.get_param_combinations(benchmark)
+                for params in param_combinations:
+                    test_id = storage.get_test_id(
+                        module_path=benchmark.module_path,
+                        benchmark_name=benchmark.name,
+                        parameters=tuple(params),
+                        class_name=benchmark.class_name,
+                    )
+                    total += 1
+
+                    snapshot_data = storage.load_snapshot(
+                        benchmark_name=benchmark.name,
+                        module_path=benchmark.module_path,
+                        parameters=params,
+                        class_name=benchmark.class_name,
+                    )
+                    if snapshot_data is None:
+                        entries[test_id] = "skip"
+                        skipped += 1
+                        logger.info(
+                            f"  [SKIP: NO SNAPSHOT] No snapshot for params: {params}"
+                        )
+                        continue
+
+                    expected_value, metadata = snapshot_data
+                    if metadata.capture_failed:
+                        entries[test_id] = "skip"
+                        skipped += 1
+                        logger.info(
+                            f"  [SKIP: FAILED CAPTURE] Failed capture for params: {params}"
+                        )
+                        continue
+
+                    result = runner.run_benchmark(benchmark, params)
+                    if not result or not result.success:
+                        entries[test_id] = "fail"
+                        failed += 1
+                        logger.error(
+                            f"  [FAIL] Failed to run for params: {params}"
+                        )
+                        continue
+
+                    comparison = comparator.compare(result.return_value, expected_value)
+                    if comparison.skipped:
+                        entries[test_id] = "skip"
+                        skipped += 1
+                        logger.info(f"  [SKIP] Skipped with params: {params}")
+                    elif not comparison.match:
+                        entries[test_id] = "fail"
+                        failed += 1
+                        logger.error(f"  [FAIL] Failed with params: {params}")
+                    else:
+                        entries[test_id] = "pass"
+                        passed += 1
+                        logger.info(f"  [PASS] Passed with params: {params}")
+            else:
+                test_id = storage.get_test_id(
+                    module_path=benchmark.module_path,
+                    benchmark_name=benchmark.name,
+                    parameters=(),
+                    class_name=benchmark.class_name,
+                )
+                total += 1
+
+                snapshot_data = storage.load_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=(),
+                    class_name=benchmark.class_name,
+                )
+                if snapshot_data is None:
+                    entries[test_id] = "skip"
+                    skipped += 1
+                    logger.info("  [SKIP: NO SNAPSHOT] No snapshot")
+                    continue
+
+                expected_value, metadata = snapshot_data
+                if metadata.capture_failed:
+                    entries[test_id] = "skip"
+                    skipped += 1
+                    logger.info("  [SKIP: FAILED CAPTURE] Failed capture")
+                    continue
+
+                result = runner.run_benchmark(benchmark)
+                if not result or not result.success:
+                    entries[test_id] = "fail"
+                    failed += 1
+                    logger.error("  [FAIL] Failed to run (succeeded during capture)")
+                    continue
+
+                comparison = comparator.compare(result.return_value, expected_value)
+                if comparison.skipped:
+                    entries[test_id] = "skip"
+                    skipped += 1
+                    logger.info("  [SKIP] Skipped")
+                elif not comparison.match:
+                    entries[test_id] = "fail"
+                    failed += 1
+                    logger.error("  [FAIL] Failed")
+                else:
+                    entries[test_id] = "pass"
+                    passed += 1
+                    logger.info("  [PASS] Passed")
+
+        meta = {
+            "counts": {"total": total, "pass": passed, "fail": failed, "skip": skipped},
+            "snapshot_dir": str(snapshot_dir),
+            "benchmark_dir": str(benchmark_dir),
+        }
+        path = storage.write_baseline(entries, meta)
+        logger.info(f"\nBaseline written to {path}")
+
+        # Baseline always returns 0; it records state only.
+        return 0
 
     def _list_command(self, args) -> int:
         """Handle the list command."""
