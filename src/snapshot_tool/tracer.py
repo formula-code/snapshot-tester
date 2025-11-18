@@ -345,6 +345,7 @@ class ExecutionTracer:
             class_name = value.__class__.__name__
             module_name = getattr(value.__class__, "__module__", "") or ""
 
+        
             # Skip built-in types and common library types
             if module_name in ("builtins", "types", "collections", "typing"):
                 return False

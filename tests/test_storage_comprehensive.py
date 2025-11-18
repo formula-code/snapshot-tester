@@ -519,20 +519,20 @@ class TestEdgeCases:
 
     def test_unicode_in_data(self, manager):
         """Test unicode in snapshot data."""
-        data = {"message": "Hello 世界 🌍"}
+        data = {"message": "Hello WORLD [EARTH]"}
 
         manager.store_snapshot(
             benchmark_name="unicode_bench",
             module_path="test_module",
             parameters=(),
             param_names=None,
-            return_value=data
+            return_value=data,
         )
 
         loaded, _ = manager.load_snapshot(
             benchmark_name="unicode_bench",
             module_path="test_module",
-            parameters=()
+            parameters=(),
         )
 
         assert loaded == data

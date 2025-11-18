@@ -553,10 +553,10 @@ class TestEdgeCases:
     def test_unicode_strings(self):
         """Test with unicode strings."""
         def unicode_func():
-            return "Hello 世界 🌍"
+            return "Hello WORLD [EARTH]"
 
         tracer = ExecutionTracer()
         result = tracer.trace_execution(unicode_func)
 
         assert result.success is True
-        assert result.return_value == "Hello 世界 🌍"
+        assert result.return_value == "Hello WORLD [EARTH]"

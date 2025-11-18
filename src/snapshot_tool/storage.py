@@ -59,6 +59,66 @@ class SnapshotManager:
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
+    # -----------------
+    # Baseline utilities
+    # -----------------
+    def baseline_path(self) -> Path:
+        """Path to the baseline status file inside the snapshot directory."""
+        return self.snapshot_dir / "baseline.json"
+
+    def get_test_id(
+        self,
+        *,
+        module_path: str,
+        benchmark_name: str,
+        parameters: tuple[Any, ...],
+        class_name: Optional[str] = None,
+    ) -> str:
+        """Return a stable identifier for a benchmark + parameters.
+
+        The identifier mirrors the on-disk snapshot layout to ensure stability
+        across baseline and verify runs, including parameter hashing.
+        """
+        param_hash = self._generate_param_hash(parameters)
+        benchmark_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
+        # Avoid accidental path traversal by normalizing components explicitly
+        return f"{module_path}/{benchmark_dir}/{param_hash}"
+
+    def write_baseline(self, entries: dict[str, str], meta: Optional[dict[str, Any]] = None) -> Path:
+        """Persist baseline pass/fail statuses under the snapshot directory.
+
+        Args:
+            entries: Mapping of `test_id` -> one of "pass" | "fail" | "skip".
+            meta: Optional metadata to include (e.g., counts, dirs).
+        Returns:
+            Path to the written file.
+        """
+        payload: dict[str, Any] = {
+            "schema": "snapshot_tool/baseline@2",
+            "timestamp": datetime.now().isoformat(),
+            "entries": entries,
+        }
+        if meta:
+            payload["meta"] = meta
+
+        path = self.baseline_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2)
+        return path
+
+    def read_baseline(self) -> Optional[dict[str, Any]]:
+        """Load baseline statuses if present, else None."""
+        path = self.baseline_path()
+        if not path.exists():
+            return None
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read baseline file {path}: {e}")
+            return None
+
     def store_snapshot(
         self,
         benchmark_name: str,

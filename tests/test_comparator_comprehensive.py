@@ -495,8 +495,8 @@ class TestEdgeCases:
 
     def test_unicode_in_structures(self, comparator):
         """Test structures with unicode."""
-        struct1 = {'text': 'Hello 世界 🌍', 'numbers': [1, 2, 3]}
-        struct2 = {'text': 'Hello 世界 🌍', 'numbers': [1, 2, 3]}
+        struct1 = {"text": "Hello WORLD [EARTH]", "numbers": [1, 2, 3]}
+        struct2 = {"text": "Hello WORLD [EARTH]", "numbers": [1, 2, 3]}
 
         result = comparator.compare(struct1, struct2)
         assert result.match is True

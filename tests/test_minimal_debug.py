@@ -49,13 +49,15 @@ def test_minimal_benchmarks():
                 result = runner.run_benchmark(benchmark, params)
 
                 if result and result.success:
-                    logger.info(f"  ✓ Successfully captured return value: {type(result.return_value)}")
+                    logger.info(
+                        f"  [PASS] Successfully captured return value: {type(result.return_value)}"
+                    )
                     logger.info(f"    Function: {result.function_name}")
                     logger.info(f"    Module: {result.module_name}")
                     logger.info(f"    Depth: {result.depth}")
                     success_count += 1
                 else:
-                    logger.info("  ✗ Failed to capture return value")
+                    logger.info("  [FAIL] Failed to capture return value")
                     if result:
                         logger.info(f"    Error: {result.error}")
         else:
@@ -63,13 +65,15 @@ def test_minimal_benchmarks():
             result = runner.run_benchmark(benchmark)
 
             if result and result.success:
-                logger.info(f"  ✓ Successfully captured return value: {type(result.return_value)}")
+                logger.info(
+                    f"  [PASS] Successfully captured return value: {type(result.return_value)}"
+                )
                 logger.info(f"    Function: {result.function_name}")
                 logger.info(f"    Module: {result.module_name}")
                 logger.info(f"    Depth: {result.depth}")
                 success_count += 1
             else:
-                logger.info("  ✗ Failed to capture return value")
+                logger.info("  [FAIL] Failed to capture return value")
                 if result:
                     logger.info(f"    Error: {result.error}")
 
@@ -96,7 +100,7 @@ def test_storage():
         return_value=test_data,
     )
 
-    logger.info(f"✓ Stored snapshot at: {snapshot_path}")
+    logger.info(f"[PASS] Stored snapshot at: {snapshot_path}")
 
     # Test loading the snapshot
     loaded_data = storage.load_snapshot(
@@ -105,8 +109,8 @@ def test_storage():
 
     if loaded_data:
         return_value, metadata = loaded_data
-        logger.info(f"✓ Loaded return value: {return_value}")
-        logger.info(f"✓ Metadata: {metadata.benchmark_name}, {metadata.timestamp}")
+        logger.info(f"[PASS] Loaded return value: {return_value}")
+        logger.info(f"[PASS] Metadata: {metadata.benchmark_name}, {metadata.timestamp}")
 
         # Clean up
         import shutil
@@ -116,7 +120,7 @@ def test_storage():
 
         return True
     else:
-        logger.info("✗ Failed to load snapshot")
+        logger.info("[FAIL] Failed to load snapshot")
         return False
 
 
@@ -130,13 +134,13 @@ def main():
 
         logger.info("\nTest Results:")
         logger.info(f"  Benchmarks: {success_count}/{total_benchmarks} passed")
-        logger.info(f"  Storage: {'✓' if storage_success else '✗'}")
+        logger.info(f"  Storage: {'[PASS]' if storage_success else '[FAIL]'}")
 
         if success_count == total_benchmarks and storage_success:
-            logger.info("✓ All tests passed!")
+            logger.info("[PASS] All tests passed!")
             return 0
         else:
-            logger.info("✗ Some tests failed")
+            logger.info("[FAIL] Some tests failed")
             return 1
 
     except Exception as e:

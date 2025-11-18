@@ -33,7 +33,7 @@ def test_class_instance_capture():
         result = runner.run_benchmark(benchmark)
 
         if result and result.success:
-            logger.info("  ✓ Benchmark executed successfully")
+            logger.info("  [PASS] Benchmark executed successfully")
             logger.info(f"  Return value type: {type(result.return_value)}")
             logger.info(f"  Return value: {result.return_value}")
 
@@ -50,10 +50,10 @@ def test_class_instance_capture():
                 param_names=None,
                 return_value=result.return_value,
             )
-            logger.info("  ✓ Snapshot stored successfully")
+            logger.info("  [PASS] Snapshot stored successfully")
 
         else:
-            logger.info("  ✗ Benchmark failed")
+            logger.info("  [FAIL] Benchmark failed")
             if result and result.error:
                 logger.info(f"  Error: {result.error}")
 
@@ -67,11 +67,11 @@ def test_class_instance_capture():
 
         if snapshot_data:
             return_value, metadata = snapshot_data
-            logger.info(f"  ✓ Loaded snapshot for {benchmark.name}")
+            logger.info(f"  [PASS] Loaded snapshot for {benchmark.name}")
             logger.info(f"    Type: {type(return_value)}")
             logger.info(f"    Value: {return_value}")
         else:
-            logger.info(f"  ✗ Failed to load snapshot for {benchmark.name}")
+            logger.info(f"  [FAIL] Failed to load snapshot for {benchmark.name}")
 
 
 def test_failed_capture():
@@ -114,7 +114,7 @@ def time_failing_benchmark():
             result = runner.run_benchmark(failing_benchmark)
 
             if result and not result.success:
-                logger.info("  ✓ Benchmark failed as expected")
+                logger.info("  [PASS] Benchmark failed as expected")
                 logger.info(f"  Error: {result.error}")
 
                 # Store failed capture
@@ -125,17 +125,17 @@ def time_failing_benchmark():
                     param_names=None,
                     failure_reason=str(result.error),
                 )
-                logger.info("  ✓ Failed capture marker stored")
+                logger.info("  [PASS] Failed capture marker stored")
 
                 # Test that we can detect failed captures
                 is_failed = storage.is_failed_capture(
                     failing_benchmark.name, failing_benchmark.module_path, ()
                 )
-                logger.info(f"  ✓ Failed capture detection: {is_failed}")
+                logger.info(f"  [PASS] Failed capture detection: {is_failed}")
             else:
-                logger.info("  ✗ Benchmark should have failed but didn't")
+                logger.info("  [FAIL] Benchmark should have failed but didn't")
         else:
-            logger.info("  ✗ Failed benchmark not found")
+            logger.info("  [FAIL] Failed benchmark not found")
 
     finally:
         # Clean up
@@ -146,4 +146,4 @@ def time_failing_benchmark():
 if __name__ == "__main__":
     test_class_instance_capture()
     test_failed_capture()
-    logger.info("\n✓ All tests completed!")
+    logger.info("\n[PASS] All tests completed!")
