@@ -27,6 +27,10 @@ def snapshot_dir():
     yield Path(temp_dir)
     shutil.rmtree(temp_dir, ignore_errors=True)
 
+def list_snapshot_files(snapshot_dir: Path) -> list[Path]:
+    """List snapshot files, including compressed ones."""
+    return list(snapshot_dir.rglob("*.pkl")) + list(snapshot_dir.rglob("*.pkl.gz"))
+
 
 def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minutes: int = 10):
     """
@@ -175,7 +179,7 @@ class TestAstropyRoundtrip:
         assert_roundtrip_succeeds(verify_result, "Verify", "astropy_benchmarks")
 
         # Verify that snapshots were created
-        snapshots = list(snapshot_dir.rglob("*.pkl"))
+        snapshots = list_snapshot_files(snapshot_dir)
         if len(snapshots) == 0:
             # All benchmarks were skipped - that's OK, but verify should reflect this
             assert "skipped" in verify_result.stdout.lower() or "no snapshots" in verify_result.stdout.lower()
@@ -209,7 +213,7 @@ class TestPandasRoundtrip:
         assert_roundtrip_succeeds(verify_result, "Verify", "pandas_benchmarks")
 
         # Verify that snapshots were created
-        snapshots = list(snapshot_dir.rglob("*.pkl"))
+        snapshots = list_snapshot_files(snapshot_dir)
         if len(snapshots) == 0:
             # All benchmarks were skipped - that's OK
             assert "skipped" in verify_result.stdout.lower() or "no snapshots" in verify_result.stdout.lower()
@@ -242,7 +246,7 @@ class TestShapelyRoundtrip:
         assert_roundtrip_succeeds(verify_result, "Verify", "shapely_benchmarks")
 
         # Shapely should create some snapshots (we know shapely works)
-        snapshots = list(snapshot_dir.rglob("*.pkl"))
+        snapshots = list_snapshot_files(snapshot_dir)
         assert len(snapshots) > 0, "Shapely should create at least one snapshot"
 
     def test_shapely_multiple_verify_passes(self, test_repos_dir, snapshot_dir):

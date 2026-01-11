@@ -6,6 +6,7 @@ with an organized directory structure.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import logging
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024
 
 
 @dataclass
@@ -55,9 +58,72 @@ class SnapshotMetadata:
 class SnapshotManager:
     """Manages snapshot storage and retrieval."""
 
-    def __init__(self, snapshot_dir: Path):
+    def __init__(
+        self, snapshot_dir: Path, *, compress_threshold_bytes: int = DEFAULT_COMPRESS_THRESHOLD_BYTES
+    ):
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.compress_threshold_bytes = compress_threshold_bytes
+
+    # -----------------
+    # Baseline utilities
+    # -----------------
+    def baseline_path(self) -> Path:
+        """Path to the baseline status file inside the snapshot directory."""
+        return self.snapshot_dir / "baseline.json"
+
+    def get_test_id(
+        self,
+        *,
+        module_path: str,
+        benchmark_name: str,
+        parameters: tuple[Any, ...],
+        class_name: Optional[str] = None,
+    ) -> str:
+        """Return a stable identifier for a benchmark + parameters.
+
+        The identifier mirrors the on-disk snapshot layout to ensure stability
+        across baseline and verify runs, including parameter hashing.
+        """
+        param_hash = self._generate_param_hash(parameters)
+        benchmark_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
+        # Avoid accidental path traversal by normalizing components explicitly
+        return f"{module_path}/{benchmark_dir}/{param_hash}"
+
+    def write_baseline(self, entries: dict[str, str], meta: Optional[dict[str, Any]] = None) -> Path:
+        """Persist baseline pass/fail statuses under the snapshot directory.
+
+        Args:
+            entries: Mapping of `test_id` -> one of "pass" | "fail" | "skip".
+            meta: Optional metadata to include (e.g., counts, dirs).
+        Returns:
+            Path to the written file.
+        """
+        payload: dict[str, Any] = {
+            "schema": "snapshot_tool/baseline@2",
+            "timestamp": datetime.now().isoformat(),
+            "entries": entries,
+        }
+        if meta:
+            payload["meta"] = meta
+
+        path = self.baseline_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2)
+        return path
+
+    def read_baseline(self) -> Optional[dict[str, Any]]:
+        """Load baseline statuses if present, else None."""
+        path = self.baseline_path()
+        if not path.exists():
+            return None
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read baseline file {path}: {e}")
+            return None
 
     # -----------------
     # Baseline utilities
@@ -139,8 +205,8 @@ class SnapshotManager:
             benchmark_dir = f"{class_name}.{benchmark_name}"
         else:
             benchmark_dir = benchmark_name
-        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
-        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
+        base_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create metadata
         snapshot_metadata = SnapshotMetadata(
@@ -164,8 +230,7 @@ class SnapshotManager:
         # Attempt to store snapshot; if pickling still fails due to nested
         # unpicklables, fall back to a placeholder structure.
         try:
-            with open(snapshot_path, "wb") as f:
-                pickle.dump(snapshot_data, f)
+            snapshot_path = self._write_snapshot_data(snapshot_data, base_path)
         except Exception as e:
             fallback_data = {
                 "return_value": {
@@ -174,11 +239,10 @@ class SnapshotManager:
                 },
                 "metadata": snapshot_metadata,
             }
-            with open(snapshot_path, "wb") as f:
-                pickle.dump(fallback_data, f)
+            snapshot_path = self._write_snapshot_data(fallback_data, base_path)
 
         # Store metadata separately as JSON for easy inspection
-        metadata_path = snapshot_path.with_suffix(".json")
+        metadata_path = base_path.with_suffix(".json")
         with open(metadata_path, "w") as f:
             json.dump(snapshot_metadata.to_dict(), f, indent=2, default=str)
 
@@ -204,8 +268,8 @@ class SnapshotManager:
             benchmark_dir = f"{class_name}.{benchmark_name}"
         else:
             benchmark_dir = benchmark_name
-        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
-        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
+        base_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create metadata for failed capture
         snapshot_metadata = SnapshotMetadata(
@@ -230,11 +294,10 @@ class SnapshotManager:
             "metadata": snapshot_metadata,
         }
 
-        with open(snapshot_path, "wb") as f:
-            pickle.dump(snapshot_data, f)
+        snapshot_path = self._write_snapshot_data(snapshot_data, base_path)
 
         # Store metadata separately as JSON for easy inspection
-        metadata_path = snapshot_path.with_suffix(".json")
+        metadata_path = base_path.with_suffix(".json")
         with open(metadata_path, "w") as f:
             json.dump(snapshot_metadata.to_dict(), f, indent=2, default=str)
 
@@ -347,13 +410,13 @@ class SnapshotManager:
             benchmark_dir = f"{class_name}.{benchmark_name}"
         else:
             benchmark_dir = benchmark_name
-        snapshot_path = self.snapshot_dir / module_path / benchmark_dir / f"{param_hash}.pkl"
-
-        if not snapshot_path.exists():
+        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
+        snapshot_path = self._resolve_snapshot_path(base_path)
+        if snapshot_path is None:
             return None
 
         try:
-            with open(snapshot_path, "rb") as f:
+            with self._open_snapshot_file(snapshot_path, "rb") as f:
                 snapshot_data = pickle.load(f)
 
             serialized_value = snapshot_data["return_value"]
@@ -394,10 +457,12 @@ class SnapshotManager:
         if not search_dir.exists():
             return snapshots
 
-        # Find all .pkl files
-        for pkl_file in search_dir.rglob("*.pkl"):
+        # Find all .pkl and .pkl.gz files
+        snapshot_files = list(search_dir.rglob("*.pkl"))
+        snapshot_files.extend(search_dir.rglob("*.pkl.gz"))
+        for pkl_file in snapshot_files:
             try:
-                with open(pkl_file, "rb") as f:
+                with self._open_snapshot_file(pkl_file, "rb") as f:
                     snapshot_data = pickle.load(f)
                 metadata = snapshot_data["metadata"]
                 snapshots.append((pkl_file, metadata))
@@ -413,12 +478,13 @@ class SnapshotManager:
         """Delete a specific snapshot."""
 
         param_hash = self._generate_param_hash(parameters)
-        snapshot_path = self.snapshot_dir / module_path / benchmark_name / f"{param_hash}.pkl"
-        metadata_path = snapshot_path.with_suffix(".json")
+        base_path = self.snapshot_dir / module_path / benchmark_name / param_hash
+        snapshot_path = self._resolve_snapshot_path(base_path)
+        metadata_path = base_path.with_suffix(".json")
 
         deleted = False
 
-        if snapshot_path.exists():
+        if snapshot_path and snapshot_path.exists():
             snapshot_path.unlink()
             deleted = True
 
@@ -426,6 +492,35 @@ class SnapshotManager:
             metadata_path.unlink()
 
         return deleted
+
+    def _write_snapshot_data(self, snapshot_data: dict[str, Any], base_path: Path) -> Path:
+        """Serialize and store snapshot data, compressing if over size threshold."""
+        pickled = pickle.dumps(snapshot_data)
+        if len(pickled) >= self.compress_threshold_bytes:
+            snapshot_path = base_path.with_suffix(".pkl.gz")
+            with gzip.open(snapshot_path, "wb") as f:
+                f.write(pickled)
+        else:
+            snapshot_path = base_path.with_suffix(".pkl")
+            with open(snapshot_path, "wb") as f:
+                f.write(pickled)
+        return snapshot_path
+
+    def _resolve_snapshot_path(self, base_path: Path) -> Optional[Path]:
+        """Return existing snapshot path (compressed or plain) if present."""
+        gz_path = base_path.with_suffix(".pkl.gz")
+        if gz_path.exists():
+            return gz_path
+        pkl_path = base_path.with_suffix(".pkl")
+        if pkl_path.exists():
+            return pkl_path
+        return None
+
+    def _open_snapshot_file(self, path: Path, mode: str):
+        """Open snapshot file, handling gzip when needed."""
+        if path.name.endswith(".pkl.gz"):
+            return gzip.open(path, mode)
+        return open(path, mode)
 
     def cleanup_empty_directories(self) -> None:
         """Remove empty directories in the snapshot tree."""
