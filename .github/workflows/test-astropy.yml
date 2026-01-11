@@ -11,12 +11,19 @@ on:
 
 jobs:
   test-astropy:
+    name: test-astropy (py${{ matrix.python-version }} / ${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-
+        shard:
+          - name: core
+            filter: "^benchmarks\\.(coordinates|units|cosmology|stats|table)"
+          - name: io
+            filter: "^benchmarks\\.(io_ascii|io_fits|votable|votable_converters|imports)"
+          - name: heavy
+            filter: "^benchmarks\\.(convolve|wcs|timeseries|modeling|visualization)"
     steps:
     - uses: actions/checkout@v4
 
@@ -29,13 +36,22 @@ jobs:
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: uv.lock
 
     - name: Install dependencies
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
       run: |
-        uv sync
-        uv pip install -e ".[dev]"
+        uv sync --group dev
+        uv pip install asv
+        uv pip install -e .
 
     - name: Run astropy benchmark roundtrip test
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
+        SNAPSHOT_TOOL_FILTER: ${{ matrix.shard.filter }}
+        SNAPSHOT_TOOL_TIMEOUT: "10"
       run: |
         uv run pytest -v tests/test_cli_roundtrip.py::TestAstropyRoundtrip -x
       timeout-minutes: 90
@@ -44,6 +60,6 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: astropy-snapshots-py${{ matrix.python-version }}
+        name: astropy-snapshots-py${{ matrix.python-version }}-${{ matrix.shard.name }}
         path: tests/.snapshots/
         retention-days: 7

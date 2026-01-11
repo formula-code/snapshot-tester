@@ -498,6 +498,30 @@ class TestEdgeCases:
 
         assert np.array_equal(loaded, large_array)
 
+    def test_snapshot_compression_for_large_files(self, temp_snapshot_dir):
+        """Test that large snapshots are compressed and still loadable."""
+        manager = SnapshotManager(temp_snapshot_dir, compress_threshold_bytes=1)
+        data = {"message": "compressed"}
+
+        snapshot_path = manager.store_snapshot(
+            benchmark_name="compress_bench",
+            module_path="test_module",
+            parameters=(),
+            param_names=None,
+            return_value=data,
+        )
+
+        assert snapshot_path.exists()
+        assert snapshot_path.name.endswith(".pkl.gz")
+
+        loaded, _ = manager.load_snapshot(
+            benchmark_name="compress_bench",
+            module_path="test_module",
+            parameters=(),
+        )
+
+        assert loaded == data
+
     def test_special_characters_in_names(self, manager):
         """Test handling special characters in benchmark names."""
         # Some characters might need escaping
