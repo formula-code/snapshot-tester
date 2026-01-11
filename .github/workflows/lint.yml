@@ -8,6 +8,7 @@ on:
 
 jobs:
   ruff:
+    name: ruff (py3.12)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -21,16 +22,24 @@ jobs:
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: uv.lock
 
     - name: Install dependencies
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
       run: |
-        uv sync
-        uv pip install -e ".[dev]"
+        uv sync --group dev
+        uv pip install -e .
 
     - name: Run ruff format check
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
       run: |
         uv run ruff format --check src/ tests/
 
     - name: Run ruff lint
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
       run: |
         uv run ruff check src/ tests/

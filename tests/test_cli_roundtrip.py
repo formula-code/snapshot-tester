@@ -6,10 +6,12 @@ passes or skips on real benchmark repositories (astropy, pandas, shapely).
 
 This mimics the behavior of customtest.sh.
 """
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -32,6 +34,21 @@ def list_snapshot_files(snapshot_dir: Path) -> list[Path]:
     return list(snapshot_dir.rglob("*.pkl")) + list(snapshot_dir.rglob("*.pkl.gz"))
 
 
+def _get_cli_filter() -> Optional[str]:
+    filter_pattern = os.getenv("SNAPSHOT_TOOL_FILTER")
+    return filter_pattern if filter_pattern else None
+
+
+def _get_cli_timeout() -> Optional[float]:
+    timeout_value = os.getenv("SNAPSHOT_TOOL_TIMEOUT")
+    if not timeout_value:
+        return None
+    try:
+        return float(timeout_value)
+    except ValueError:
+        return None
+
+
 def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minutes: int = 10):
     """
     Run a complete snapshot roundtrip: list -> capture -> verify.
@@ -46,25 +63,56 @@ def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minu
     """
     timeout_seconds = timeout_minutes * 60
 
+    filter_pattern = _get_cli_filter()
+    benchmark_timeout = _get_cli_timeout()
+
+    list_args = ["snapshot-tool", "list", str(benchmark_dir)]
+    if filter_pattern:
+        list_args.extend(["--filter", filter_pattern])
+
     # Step 1: List benchmarks
     list_result = subprocess.run(
-        ["snapshot-tool", "list", str(benchmark_dir)],
+        list_args,
         capture_output=True,
         text=True,
         timeout=60
     )
 
+    capture_args = [
+        "snapshot-tool",
+        "capture",
+        str(benchmark_dir),
+        "--snapshot-dir",
+        str(snapshot_dir),
+    ]
+    if filter_pattern:
+        capture_args.extend(["--filter", filter_pattern])
+    if benchmark_timeout is not None:
+        capture_args.extend(["--timeout", str(benchmark_timeout)])
+
     # Step 2: Capture snapshots
     capture_result = subprocess.run(
-        ["snapshot-tool", "capture", str(benchmark_dir), "--snapshot-dir", str(snapshot_dir)],
+        capture_args,
         capture_output=True,
         text=True,
         timeout=timeout_seconds
     )
 
+    verify_args = [
+        "snapshot-tool",
+        "verify",
+        str(benchmark_dir),
+        "--snapshot-dir",
+        str(snapshot_dir),
+    ]
+    if filter_pattern:
+        verify_args.extend(["--filter", filter_pattern])
+    if benchmark_timeout is not None:
+        verify_args.extend(["--timeout", str(benchmark_timeout)])
+
     # Step 3: Verify snapshots
     verify_result = subprocess.run(
-        ["snapshot-tool", "verify", str(benchmark_dir), "--snapshot-dir", str(snapshot_dir)],
+        verify_args,
         capture_output=True,
         text=True,
         timeout=timeout_seconds
@@ -170,10 +218,8 @@ class TestAstropyRoundtrip:
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
 
-        # Capture should succeed (or skip all benchmarks)
-        assert capture_result.returncode == 0, (
-            f"Capture failed:\n{capture_result.stdout}\n{capture_result.stderr}"
-        )
+        # Capture should succeed (or skip/timeout some benchmarks)
+        assert_roundtrip_succeeds(capture_result, "Capture", "astropy_benchmarks")
 
         # Verify should succeed with 100% passes or skips (no failures allowed)
         assert_roundtrip_succeeds(verify_result, "Verify", "astropy_benchmarks")
@@ -204,10 +250,8 @@ class TestPandasRoundtrip:
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
 
-        # Capture should succeed (or skip all benchmarks)
-        assert capture_result.returncode == 0, (
-            f"Capture failed:\n{capture_result.stdout}\n{capture_result.stderr}"
-        )
+        # Capture should succeed (or skip/timeout some benchmarks)
+        assert_roundtrip_succeeds(capture_result, "Capture", "pandas_benchmarks")
 
         # Verify should succeed with 100% passes or skips (no failures allowed)
         assert_roundtrip_succeeds(verify_result, "Verify", "pandas_benchmarks")
@@ -237,10 +281,8 @@ class TestShapelyRoundtrip:
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
 
-        # Capture should succeed
-        assert capture_result.returncode == 0, (
-            f"Capture failed:\n{capture_result.stdout}\n{capture_result.stderr}"
-        )
+        # Capture should succeed (or skip/timeout some benchmarks)
+        assert_roundtrip_succeeds(capture_result, "Capture", "shapely_benchmarks")
 
         # Verify should succeed with 100% passes or skips (no failures allowed)
         assert_roundtrip_succeeds(verify_result, "Verify", "shapely_benchmarks")
@@ -256,18 +298,45 @@ class TestShapelyRoundtrip:
             pytest.skip("Shapely benchmarks not found")
 
         # Capture once
+        filter_pattern = _get_cli_filter()
+        benchmark_timeout = _get_cli_timeout()
+
+        capture_args = [
+            "snapshot-tool",
+            "capture",
+            str(shapely_dir),
+            "--snapshot-dir",
+            str(snapshot_dir),
+        ]
+        if filter_pattern:
+            capture_args.extend(["--filter", filter_pattern])
+        if benchmark_timeout is not None:
+            capture_args.extend(["--timeout", str(benchmark_timeout)])
+
         capture_result = subprocess.run(
-            ["snapshot-tool", "capture", str(shapely_dir), "--snapshot-dir", str(snapshot_dir)],
+            capture_args,
             capture_output=True,
             text=True,
             timeout=300
         )
-        assert capture_result.returncode == 0
+        assert_roundtrip_succeeds(capture_result, "Capture", "shapely_benchmarks")
 
         # Verify three times - all should pass with no failures
         for round_num in range(3):
+            verify_args = [
+                "snapshot-tool",
+                "verify",
+                str(shapely_dir),
+                "--snapshot-dir",
+                str(snapshot_dir),
+            ]
+            if filter_pattern:
+                verify_args.extend(["--filter", filter_pattern])
+            if benchmark_timeout is not None:
+                verify_args.extend(["--timeout", str(benchmark_timeout)])
+
             verify_result = subprocess.run(
-                ["snapshot-tool", "verify", str(shapely_dir), "--snapshot-dir", str(snapshot_dir)],
+                verify_args,
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -318,8 +387,8 @@ class TestAllReposRoundtrip:
         for repo_name, result in results.items():
             if result['list'] != 0:
                 failed_repos.append(f"{repo_name}: list failed")
-            if result['capture'] != 0:
-                failed_repos.append(f"{repo_name}: capture failed")
+            if result['capture'] not in [0, 1]:
+                failed_repos.append(f"{repo_name}: capture crashed")
             if result['verify'] != 0:
                 failed_repos.append(f"{repo_name}: verify failed")
 

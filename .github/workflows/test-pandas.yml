@@ -11,12 +11,19 @@ on:
 
 jobs:
   test-pandas:
+    name: test-pandas (py${{ matrix.python-version }} / ${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-
+        shard:
+          - name: io-plot
+            filter: "^benchmarks\\.(io|plotting|package)"
+          - name: groupby-reshape
+            filter: "^benchmarks\\.(groupby|reshape|rolling|join_merge)"
+          - name: core
+            filter: "^benchmarks\\.(?!io|plotting|package|groupby|reshape|rolling|join_merge)"
     steps:
     - uses: actions/checkout@v4
 
@@ -29,13 +36,21 @@ jobs:
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: uv.lock
 
     - name: Install dependencies
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
       run: |
-        uv sync
-        uv pip install -e ".[dev]"
+        uv sync --group dev
+        uv pip install -e .
 
     - name: Run pandas benchmark roundtrip test
+      env:
+        UV_PYTHON: ${{ env.pythonLocation }}/bin/python
+        SNAPSHOT_TOOL_FILTER: ${{ matrix.shard.filter }}
+        SNAPSHOT_TOOL_TIMEOUT: "45"
       run: |
         uv run pytest -v tests/test_cli_roundtrip.py::TestPandasRoundtrip -x
       timeout-minutes: 90
@@ -44,6 +59,6 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: pandas-snapshots-py${{ matrix.python-version }}
+        name: pandas-snapshots-py${{ matrix.python-version }}-${{ matrix.shard.name }}
         path: tests/.snapshots/
         retention-days: 7
