@@ -26,9 +26,9 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/formulacode/snapshot-tester"
-Repository = "https://github.com/formulacode/snapshot-tester"
-Issues = "https://github.com/formulacode/snapshot-tester/issues"
+Homepage = "https://github.com/formula-code/snapshot-tester"
+Repository = "https://github.com/formula-code/snapshot-tester"
+Issues = "https://github.com/formula-code/snapshot-tester/issues"
 
 [project.scripts]
 snapshot-tool = "snapshot_tool.cli:main"
