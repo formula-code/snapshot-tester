@@ -4,6 +4,7 @@ Comparison engine for snapshot testing.
 This module compares captured outputs with stored snapshots using
 pure Python numerical comparisons with tolerances.
 """
+
 from __future__ import annotations
 
 import math
@@ -13,6 +14,7 @@ from typing import Any, Optional
 # Optional numpy import - only used for type detection when benchmarks return numpy arrays
 try:
     import numpy as np
+
     HAS_NUMPY = True
 except ImportError:
     np = None  # type: ignore
@@ -25,7 +27,7 @@ def _is_numpy_array(obj: Any) -> bool:
         return isinstance(obj, np.ndarray)
     # Fallback: check by module and type name
     obj_type = type(obj)
-    return obj_type.__module__ == 'numpy' and obj_type.__name__ == 'ndarray'
+    return obj_type.__module__ == "numpy" and obj_type.__name__ == "ndarray"
 
 
 def _is_numpy_scalar(obj: Any) -> bool:
@@ -34,10 +36,12 @@ def _is_numpy_scalar(obj: Any) -> bool:
         return isinstance(obj, np.number)
     # Fallback: check by module
     obj_type = type(obj)
-    return obj_type.__module__ == 'numpy'
+    return obj_type.__module__ == "numpy"
 
 
-def _py_isclose(a: float, b: float, rtol: float = 1e-5, atol: float = 1e-8, equal_nan: bool = False) -> bool:
+def _py_isclose(
+    a: float, b: float, rtol: float = 1e-5, atol: float = 1e-8, equal_nan: bool = False
+) -> bool:
     """Pure Python implementation of numpy.isclose for scalars."""
     # Handle NaN and infinity values
     try:
@@ -101,7 +105,7 @@ class Comparator:
                 return ComparisonResult(
                     match=True,
                     skipped=True,
-                    details="Skipped comparison for generator (cannot be pickled)"
+                    details="Skipped comparison for generator (cannot be pickled)",
                 )
 
             # Handle serialized callables (functions/closures) - skip comparison
@@ -170,9 +174,7 @@ class Comparator:
 
         # Check class name and module
         expected_class = expected["__class_name__"]
-        expected_module = expected["__module__"]
         actual_class = actual.__class__.__name__
-        actual_module = getattr(actual.__class__, "__module__", "")
 
         if actual_class != expected_class:
             return ComparisonResult(
@@ -215,10 +217,10 @@ class Comparator:
             return None
 
         # Get shape and dtype info
-        actual_shape = getattr(actual, 'shape', None)
-        expected_shape = getattr(expected, 'shape', None)
-        actual_dtype = getattr(actual, 'dtype', None)
-        expected_dtype = getattr(expected, 'dtype', None)
+        actual_shape = getattr(actual, "shape", None)
+        expected_shape = getattr(expected, "shape", None)
+        actual_dtype = getattr(actual, "dtype", None)
+        expected_dtype = getattr(expected, "dtype", None)
 
         # Check shapes if strict_shapes is enabled
         if self.config.strict_shapes and actual_shape != expected_shape:
@@ -234,8 +236,10 @@ class Comparator:
                 error_message=f"Array dtypes differ: {actual_dtype} vs {expected_dtype}",
             )
 
-        # Handle object arrays (like Shapely geometry arrays) - compare element-wise
-        if actual_dtype == object or expected_dtype == object:
+        # Handle object arrays (like Shapely geometry arrays) - compare element-wise.
+        # `dtype == object` is the idiomatic numpy object-dtype check; `is` would
+        # be wrong here (a dtype is not the `object` type itself).
+        if actual_dtype == object or expected_dtype == object:  # noqa: E721
             return self._compare_object_arrays(actual, expected)
 
         # Compare numeric arrays element-wise using pure Python
@@ -261,7 +265,9 @@ class Comparator:
                     continue
 
                 # Use pure Python isclose
-                if not _py_isclose(a_float, e_float, self.config.rtol, self.config.atol, self.config.equal_nan):
+                if not _py_isclose(
+                    a_float, e_float, self.config.rtol, self.config.atol, self.config.equal_nan
+                ):
                     all_close = False
                     differences.append(abs(a_float - e_float))
 
@@ -444,7 +450,7 @@ class Comparator:
             # Handle cases where __eq__ returns an array (e.g., SkyCoord, pandas Series)
             if _is_numpy_array(match):
                 # Call .all() method on the array if available
-                if hasattr(match, 'all'):
+                if hasattr(match, "all"):
                     match = bool(match.all())
                 else:
                     # Fallback: iterate and check all elements
@@ -454,7 +460,9 @@ class Comparator:
                 # Check if it contains arrays (use len() to avoid evaluating the list as boolean)
                 if _is_numpy_array(match[0]):
                     match = all(
-                        (arr.all() if hasattr(arr, 'all') else bool(arr)) if _is_numpy_array(arr) else arr
+                        (arr.all() if hasattr(arr, "all") else bool(arr))
+                        if _is_numpy_array(arr)
+                        else arr
                         for arr in match
                     )
 
@@ -464,14 +472,16 @@ class Comparator:
             )
         except Exception as e:
             return ComparisonResult(
-                match=False, error_message=f"Object comparison failed: {e}", details={"type": actual_type.__name__}
+                match=False,
+                error_message=f"Object comparison failed: {e}",
+                details={"type": actual_type.__name__},
             )
 
     def _compare_fallback(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Fallback comparison using == operator."""
         try:
-            # Check type consistency
-            if type(actual) != type(expected):
+            # Check type consistency (strict: exact type identity, not isinstance)
+            if type(actual) is not type(expected):
                 return ComparisonResult(
                     match=False,
                     error_message=f"Type mismatch: {type(actual).__name__} vs {type(expected).__name__}",
@@ -544,7 +554,7 @@ class Comparator:
         # Check numpy scalar types if available
         if _is_numpy_scalar(value):
             # Check if it's actually a scalar (not an array)
-            return not hasattr(value, 'shape') or value.shape == ()
+            return not hasattr(value, "shape") or value.shape == ()
         return False
 
     def _is_sequence(self, value: Any) -> bool:

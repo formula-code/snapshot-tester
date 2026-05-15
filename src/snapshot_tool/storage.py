@@ -1,17 +1,28 @@
 """
 Snapshot storage and management system.
 
-This module handles storing and retrieving snapshots using pickle files
-with an organized directory structure.
+Snapshots live in a single SQLite database at ``<snapshot_dir>/snapshots.db``.
+The captured return values are pickled, gzipped, and stored in a content-addressed
+``blobs`` table (sha256 → gzipped pickle, refcounted) so that benchmarks producing
+identical outputs share a single payload on disk. Per-test metadata lives in a
+``snapshots`` table that references the blob by hash.
+
+A JSON metadata sidecar is still written next to where the per-test entry would
+have lived under the old layout (``<snapshot_dir>/<module>/<class.benchmark>/<param_hash>.json``)
+because downstream tooling consumes it.
+
+The baseline file (``<snapshot_dir>/baseline.json``) is unchanged — it is small,
+human-readable, and easy to diff in CI.
 """
+
 from __future__ import annotations
 
 import gzip
 import hashlib
 import json
 import logging
-import os
 import pickle
+import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +30,39 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS blobs (
+    hash             TEXT PRIMARY KEY,
+    data             BLOB NOT NULL,
+    refcount         INTEGER NOT NULL DEFAULT 0,
+    raw_size         INTEGER NOT NULL,
+    compressed_size  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    test_id          TEXT PRIMARY KEY,
+    module_path      TEXT NOT NULL,
+    benchmark_name   TEXT NOT NULL,
+    class_name       TEXT,
+    param_hash       TEXT NOT NULL,
+    parameters       BLOB NOT NULL,
+    param_names      BLOB,
+    blob_hash        TEXT,
+    capture_failed   INTEGER NOT NULL DEFAULT 0,
+    failure_reason   TEXT,
+    timestamp        TEXT NOT NULL,
+    git_commit       TEXT,
+    git_branch       TEXT,
+    python_version   TEXT,
+    platform         TEXT,
+    FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_module
+    ON snapshots(module_path);
+CREATE INDEX IF NOT EXISTS idx_snapshots_module_bench
+    ON snapshots(module_path, benchmark_name);
+"""
 
 
 @dataclass
@@ -28,10 +71,10 @@ class SnapshotMetadata:
 
     benchmark_name: str
     module_path: str
-    parameters: tuple[Any, ...]
-    param_names: Optional[list[str]]
+    parameters: tuple
+    param_names: Optional[list]
     timestamp: datetime
-    class_name: Optional[str] = None  # Added to disambiguate benchmarks with same name
+    class_name: Optional[str] = None
     git_commit: Optional[str] = None
     git_branch: Optional[str] = None
     python_version: Optional[str] = None
@@ -39,67 +82,53 @@ class SnapshotMetadata:
     capture_failed: bool = False
     failure_reason: Optional[str] = None
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
+    def to_dict(self) -> dict:
         data = asdict(self)
-        # Convert datetime to string
         data["timestamp"] = self.timestamp.isoformat()
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SnapshotMetadata":
-        """Create from dictionary."""
-        # Convert timestamp string back to datetime
+    def from_dict(cls, data: dict) -> SnapshotMetadata:
         if isinstance(data["timestamp"], str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
         return cls(**data)
 
 
 class SnapshotManager:
-    """Manages snapshot storage and retrieval."""
+    """Manages snapshot storage in a SQLite database with deduplicated, gzipped payloads."""
+
+    DB_NAME = "snapshots.db"
 
     def __init__(
-        self, snapshot_dir: Path, *, compress_threshold_bytes: int = DEFAULT_COMPRESS_THRESHOLD_BYTES
+        self,
+        snapshot_dir,
+        *,
+        compress_threshold_bytes: int = 0,  # accepted for API back-compat; unused
     ):
+        # ``compress_threshold_bytes`` is intentionally accepted but ignored —
+        # the SQLite backend always gzips every payload. Kept in the signature
+        # so callers passing it as a keyword don't crash.
+        del compress_threshold_bytes
+
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        self.compress_threshold_bytes = compress_threshold_bytes
+        self.db_path = self.snapshot_dir / self.DB_NAME
+        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.executescript(_SCHEMA)
+        self._conn.commit()
 
-    # -----------------
-    # Baseline utilities
-    # -----------------
+    # ------------------------------------------------------------------
+    # Baseline utilities (unchanged — baseline.json stays a flat file)
+    # ------------------------------------------------------------------
+
     def baseline_path(self) -> Path:
-        """Path to the baseline status file inside the snapshot directory."""
         return self.snapshot_dir / "baseline.json"
 
-    def get_test_id(
-        self,
-        *,
-        module_path: str,
-        benchmark_name: str,
-        parameters: tuple[Any, ...],
-        class_name: Optional[str] = None,
-    ) -> str:
-        """Return a stable identifier for a benchmark + parameters.
-
-        The identifier mirrors the on-disk snapshot layout to ensure stability
-        across baseline and verify runs, including parameter hashing.
-        """
-        param_hash = self._generate_param_hash(parameters)
-        benchmark_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
-        # Avoid accidental path traversal by normalizing components explicitly
-        return f"{module_path}/{benchmark_dir}/{param_hash}"
-
-    def write_baseline(self, entries: dict[str, str], meta: Optional[dict[str, Any]] = None) -> Path:
-        """Persist baseline pass/fail statuses under the snapshot directory.
-
-        Args:
-            entries: Mapping of `test_id` -> one of "pass" | "fail" | "skip".
-            meta: Optional metadata to include (e.g., counts, dirs).
-        Returns:
-            Path to the written file.
-        """
-        payload: dict[str, Any] = {
+    def write_baseline(self, entries: dict, meta: Optional[dict] = None) -> Path:
+        payload: dict = {
             "schema": "snapshot_tool/baseline@2",
             "timestamp": datetime.now().isoformat(),
             "entries": entries,
@@ -113,8 +142,7 @@ class SnapshotManager:
             json.dump(payload, f, indent=2)
         return path
 
-    def read_baseline(self) -> Optional[dict[str, Any]]:
-        """Load baseline statuses if present, else None."""
+    def read_baseline(self) -> Optional[dict]:
         path = self.baseline_path()
         if not path.exists():
             return None
@@ -124,95 +152,43 @@ class SnapshotManager:
         except Exception as e:
             logger.warning(f"Failed to read baseline file {path}: {e}")
             return None
-
-    # -----------------
-    # Baseline utilities
-    # -----------------
-    def baseline_path(self) -> Path:
-        """Path to the baseline status file inside the snapshot directory."""
-        return self.snapshot_dir / "baseline.json"
 
     def get_test_id(
         self,
         *,
         module_path: str,
         benchmark_name: str,
-        parameters: tuple[Any, ...],
+        parameters: tuple,
         class_name: Optional[str] = None,
     ) -> str:
-        """Return a stable identifier for a benchmark + parameters.
-
-        The identifier mirrors the on-disk snapshot layout to ensure stability
-        across baseline and verify runs, including parameter hashing.
-        """
+        """Return a stable identifier for a (benchmark, parameters) pair."""
         param_hash = self._generate_param_hash(parameters)
-        benchmark_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
-        # Avoid accidental path traversal by normalizing components explicitly
-        return f"{module_path}/{benchmark_dir}/{param_hash}"
+        bench_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
+        return f"{module_path}/{bench_dir}/{param_hash}"
 
-    def write_baseline(self, entries: dict[str, str], meta: Optional[dict[str, Any]] = None) -> Path:
-        """Persist baseline pass/fail statuses under the snapshot directory.
-
-        Args:
-            entries: Mapping of `test_id` -> one of "pass" | "fail" | "skip".
-            meta: Optional metadata to include (e.g., counts, dirs).
-        Returns:
-            Path to the written file.
-        """
-        payload: dict[str, Any] = {
-            "schema": "snapshot_tool/baseline@2",
-            "timestamp": datetime.now().isoformat(),
-            "entries": entries,
-        }
-        if meta:
-            payload["meta"] = meta
-
-        path = self.baseline_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(payload, f, indent=2)
-        return path
-
-    def read_baseline(self) -> Optional[dict[str, Any]]:
-        """Load baseline statuses if present, else None."""
-        path = self.baseline_path()
-        if not path.exists():
-            return None
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to read baseline file {path}: {e}")
-            return None
+    # ------------------------------------------------------------------
+    # Public snapshot API
+    # ------------------------------------------------------------------
 
     def store_snapshot(
         self,
         benchmark_name: str,
         module_path: str,
-        parameters: tuple[Any, ...],
-        param_names: Optional[list[str]],
+        parameters: tuple,
+        param_names: Optional[list],
         return_value: Any,
         class_name: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict] = None,
     ) -> Path:
-        """Store a snapshot with its metadata."""
+        """Store a snapshot and its metadata; returns the JSON sidecar path."""
 
-        # Generate parameter hash for unique identification
-        param_hash = self._generate_param_hash(parameters)
+        # 1. Serialize the return value (pickle + best-effort placeholder fallback)
+        serialized = self._serialize_value(return_value)
 
-        # Create directory structure: .snapshots/<module>/<class>.<benchmark>/ or .snapshots/<module>/<benchmark>/
-        if class_name:
-            benchmark_dir = f"{class_name}.{benchmark_name}"
-        else:
-            benchmark_dir = benchmark_name
-        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
-        base_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create metadata
         snapshot_metadata = SnapshotMetadata(
             benchmark_name=benchmark_name,
             module_path=module_path,
-            parameters=parameters,
+            parameters=tuple(parameters),
             param_names=param_names,
             class_name=class_name,
             timestamp=datetime.now(),
@@ -223,59 +199,50 @@ class SnapshotManager:
             **(metadata or {}),
         )
 
-        # Store the snapshot data
-        serialized_value = self._serialize_value(return_value)
-        snapshot_data = {"return_value": serialized_value, "metadata": snapshot_metadata}
-
-        # Attempt to store snapshot; if pickling still fails due to nested
-        # unpicklables, fall back to a placeholder structure.
         try:
-            snapshot_path = self._write_snapshot_data(snapshot_data, base_path)
+            self._write_row(
+                snapshot_metadata,
+                return_value=serialized,
+                capture_failed=False,
+                failure_reason=None,
+            )
         except Exception as e:
-            fallback_data = {
-                "return_value": {
-                    "__unpicklable__": True,
-                    "__error__": f"Pickle failed: {e}",
-                },
-                "metadata": snapshot_metadata,
+            # Pickle of the value itself failed (the serializer's placeholders
+            # should have prevented this; this is a belt-and-braces fallback).
+            placeholder = {
+                "__unpicklable__": True,
+                "__error__": f"Pickle failed: {e}",
             }
-            snapshot_path = self._write_snapshot_data(fallback_data, base_path)
+            self._write_row(
+                snapshot_metadata,
+                return_value=placeholder,
+                capture_failed=False,
+                failure_reason=None,
+            )
 
-        # Store metadata separately as JSON for easy inspection
-        metadata_path = base_path.with_suffix(".json")
-        with open(metadata_path, "w") as f:
-            json.dump(snapshot_metadata.to_dict(), f, indent=2, default=str)
-
-        return snapshot_path
+        return self._write_json_sidecar(snapshot_metadata)
 
     def store_failed_capture(
         self,
         benchmark_name: str,
         module_path: str,
-        parameters: tuple[Any, ...],
-        param_names: Optional[list[str]],
-        failure_reason: str,
+        parameters: tuple,
+        param_names: Optional[list],
+        failure_reason,
         class_name: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict] = None,
     ) -> Path:
-        """Store a failed capture marker."""
+        """Record a failed capture; returns the JSON sidecar path."""
 
-        # Generate parameter hash for unique identification
-        param_hash = self._generate_param_hash(parameters)
+        # Coerce non-string failure_reason (e.g., a raw Exception passed in by
+        # an embedding harness) to a string — the column is TEXT.
+        if failure_reason is not None and not isinstance(failure_reason, str):
+            failure_reason = f"{type(failure_reason).__name__}: {failure_reason}"
 
-        # Create directory structure: .snapshots/<module>/<class>.<benchmark>/ or .snapshots/<module>/<benchmark>/
-        if class_name:
-            benchmark_dir = f"{class_name}.{benchmark_name}"
-        else:
-            benchmark_dir = benchmark_name
-        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
-        base_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create metadata for failed capture
         snapshot_metadata = SnapshotMetadata(
             benchmark_name=benchmark_name,
             module_path=module_path,
-            parameters=parameters,
+            parameters=tuple(parameters),
             param_names=param_names,
             class_name=class_name,
             timestamp=datetime.now(),
@@ -288,57 +255,415 @@ class SnapshotManager:
             **(metadata or {}),
         )
 
-        # Store the failed capture marker
-        snapshot_data = {
-            "return_value": None,  # No return value for failed captures
-            "metadata": snapshot_metadata,
+        self._write_row(
+            snapshot_metadata,
+            return_value=None,  # no payload for failed captures
+            capture_failed=True,
+            failure_reason=failure_reason,
+        )
+
+        return self._write_json_sidecar(snapshot_metadata)
+
+    def load_snapshot(
+        self,
+        benchmark_name: str,
+        module_path: str,
+        parameters: tuple,
+        class_name: Optional[str] = None,
+    ):
+        """Load (return_value, SnapshotMetadata) for a snapshot, or None if missing."""
+
+        test_id = self.get_test_id(
+            module_path=module_path,
+            benchmark_name=benchmark_name,
+            parameters=tuple(parameters),
+            class_name=class_name,
+        )
+        row = self._conn.execute(
+            """
+            SELECT s.module_path, s.benchmark_name, s.class_name,
+                   s.parameters, s.param_names,
+                   s.capture_failed, s.failure_reason, s.timestamp,
+                   s.git_commit, s.git_branch, s.python_version, s.platform,
+                   b.data
+              FROM snapshots s
+         LEFT JOIN blobs b ON b.hash = s.blob_hash
+             WHERE s.test_id = ?
+            """,
+            (test_id,),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            (
+                module_path_db,
+                benchmark_name_db,
+                class_name_db,
+                parameters_blob,
+                param_names_blob,
+                capture_failed,
+                failure_reason,
+                timestamp,
+                git_commit,
+                git_branch,
+                python_version,
+                platform,
+                data,
+            ) = row
+
+            metadata = SnapshotMetadata(
+                benchmark_name=benchmark_name_db,
+                module_path=module_path_db,
+                parameters=tuple(pickle.loads(parameters_blob)),
+                param_names=pickle.loads(param_names_blob)
+                if param_names_blob is not None
+                else None,
+                class_name=class_name_db,
+                timestamp=datetime.fromisoformat(timestamp),
+                git_commit=git_commit,
+                git_branch=git_branch,
+                python_version=python_version,
+                platform=platform,
+                capture_failed=bool(capture_failed),
+                failure_reason=failure_reason,
+            )
+
+            if data is None:
+                # Failed-capture row, or value was never stored
+                return self._deserialize_value(None), metadata
+
+            raw = gzip.decompress(data)
+            value = self._deserialize_value(pickle.loads(raw))
+            return value, metadata
+        except Exception as e:
+            logger.warning(f"Failed to load snapshot {test_id}: {e}")
+            return None
+
+    def is_failed_capture(
+        self,
+        benchmark_name: str,
+        module_path: str,
+        parameters: tuple,
+    ) -> bool:
+        loaded = self.load_snapshot(benchmark_name, module_path, parameters)
+        if loaded is None:
+            return False
+        _, metadata = loaded
+        return metadata.capture_failed
+
+    def list_snapshots(
+        self,
+        module_path: Optional[str] = None,
+        benchmark_name: Optional[str] = None,
+    ):
+        """List all snapshots as a list of (json_sidecar_path, SnapshotMetadata) tuples."""
+
+        query = """
+            SELECT module_path, benchmark_name, class_name, param_hash,
+                   parameters, param_names,
+                   capture_failed, failure_reason, timestamp,
+                   git_commit, git_branch, python_version, platform
+              FROM snapshots
+        """
+        clauses = []
+        args: list = []
+        if module_path:
+            clauses.append("module_path = ?")
+            args.append(module_path)
+        if benchmark_name:
+            clauses.append("benchmark_name = ?")
+            args.append(benchmark_name)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+
+        results = []
+        for row in self._conn.execute(query, args).fetchall():
+            (
+                module_path_db,
+                benchmark_name_db,
+                class_name_db,
+                param_hash,
+                parameters_blob,
+                param_names_blob,
+                capture_failed,
+                failure_reason,
+                timestamp,
+                git_commit,
+                git_branch,
+                python_version,
+                platform,
+            ) = row
+            try:
+                metadata = SnapshotMetadata(
+                    benchmark_name=benchmark_name_db,
+                    module_path=module_path_db,
+                    parameters=tuple(pickle.loads(parameters_blob)),
+                    param_names=(
+                        pickle.loads(param_names_blob) if param_names_blob is not None else None
+                    ),
+                    class_name=class_name_db,
+                    timestamp=datetime.fromisoformat(timestamp),
+                    git_commit=git_commit,
+                    git_branch=git_branch,
+                    python_version=python_version,
+                    platform=platform,
+                    capture_failed=bool(capture_failed),
+                    failure_reason=failure_reason,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load metadata row for {benchmark_name_db}: {e}")
+                continue
+            sidecar = self._sidecar_path(
+                module_path_db, benchmark_name_db, class_name_db, param_hash
+            )
+            results.append((sidecar, metadata))
+        return results
+
+    def delete_snapshot(
+        self,
+        benchmark_name: str,
+        module_path: str,
+        parameters: tuple,
+        class_name: Optional[str] = None,
+    ) -> bool:
+        """Delete a snapshot row (and decrement the underlying blob refcount)."""
+
+        test_id = self.get_test_id(
+            module_path=module_path,
+            benchmark_name=benchmark_name,
+            parameters=tuple(parameters),
+            class_name=class_name,
+        )
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT blob_hash, param_hash FROM snapshots WHERE test_id = ?",
+                (test_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            old_blob_hash, param_hash = row
+            self._conn.execute("DELETE FROM snapshots WHERE test_id = ?", (test_id,))
+            if old_blob_hash is not None:
+                self._release_blob(old_blob_hash)
+
+        # Remove JSON sidecar if present
+        sidecar = self._sidecar_path(module_path, benchmark_name, class_name, param_hash)
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError:
+                pass
+        return True
+
+    def get_snapshot_stats(self) -> dict:
+        """Aggregate stats over the snapshot DB."""
+
+        total_snapshots = self._conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        size_row = self._conn.execute(
+            "SELECT COALESCE(SUM(compressed_size), 0), COALESCE(SUM(raw_size), 0), COUNT(*) "
+            "FROM blobs"
+        ).fetchone()
+        total_compressed, total_raw, unique_blobs = size_row
+
+        modules = [r[0] for r in self._conn.execute("SELECT DISTINCT module_path FROM snapshots")]
+        benchmarks = [
+            f"{r[0]}.{r[1]}"
+            for r in self._conn.execute(
+                "SELECT DISTINCT module_path, benchmark_name FROM snapshots"
+            )
+        ]
+
+        ts_row = self._conn.execute(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM snapshots"
+        ).fetchone()
+        oldest_ts, newest_ts = ts_row
+        oldest = datetime.fromisoformat(oldest_ts) if oldest_ts else None
+        newest = datetime.fromisoformat(newest_ts) if newest_ts else None
+
+        return {
+            "total_snapshots": total_snapshots,
+            "unique_blobs": unique_blobs,
+            "modules": modules,
+            "benchmarks": benchmarks,
+            "oldest_snapshot": oldest,
+            "newest_snapshot": newest,
+            "total_size_bytes": int(total_compressed),
+            "uncompressed_size_bytes": int(total_raw),
         }
 
-        snapshot_path = self._write_snapshot_data(snapshot_data, base_path)
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
-        # Store metadata separately as JSON for easy inspection
-        metadata_path = base_path.with_suffix(".json")
-        with open(metadata_path, "w") as f:
-            json.dump(snapshot_metadata.to_dict(), f, indent=2, default=str)
+    def __del__(self):
+        self.close()
 
-        return snapshot_path
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _write_row(
+        self,
+        meta: SnapshotMetadata,
+        return_value: Any,
+        capture_failed: bool,
+        failure_reason: Optional[str],
+    ) -> None:
+        test_id = self.get_test_id(
+            module_path=meta.module_path,
+            benchmark_name=meta.benchmark_name,
+            parameters=meta.parameters,
+            class_name=meta.class_name,
+        )
+        param_hash = self._generate_param_hash(meta.parameters)
+
+        blob_hash: Optional[str] = None
+        if not capture_failed:
+            blob_hash = self._store_blob(return_value)
+
+        params_blob = pickle.dumps(tuple(meta.parameters), protocol=pickle.HIGHEST_PROTOCOL)
+        param_names_blob = (
+            pickle.dumps(list(meta.param_names), protocol=pickle.HIGHEST_PROTOCOL)
+            if meta.param_names is not None
+            else None
+        )
+
+        with self._conn:
+            # Decrement refcount of any previously-stored blob for this test_id
+            prev = self._conn.execute(
+                "SELECT blob_hash FROM snapshots WHERE test_id = ?",
+                (test_id,),
+            ).fetchone()
+            old_blob_hash = prev[0] if prev else None
+
+            self._conn.execute(
+                """
+                INSERT INTO snapshots (
+                    test_id, module_path, benchmark_name, class_name, param_hash,
+                    parameters, param_names,
+                    blob_hash, capture_failed, failure_reason,
+                    timestamp, git_commit, git_branch, python_version, platform
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(test_id) DO UPDATE SET
+                    module_path     = excluded.module_path,
+                    benchmark_name  = excluded.benchmark_name,
+                    class_name      = excluded.class_name,
+                    param_hash      = excluded.param_hash,
+                    parameters      = excluded.parameters,
+                    param_names     = excluded.param_names,
+                    blob_hash       = excluded.blob_hash,
+                    capture_failed  = excluded.capture_failed,
+                    failure_reason  = excluded.failure_reason,
+                    timestamp       = excluded.timestamp,
+                    git_commit      = excluded.git_commit,
+                    git_branch      = excluded.git_branch,
+                    python_version  = excluded.python_version,
+                    platform        = excluded.platform
+                """,
+                (
+                    test_id,
+                    meta.module_path,
+                    meta.benchmark_name,
+                    meta.class_name,
+                    param_hash,
+                    params_blob,
+                    param_names_blob,
+                    blob_hash,
+                    1 if capture_failed else 0,
+                    failure_reason,
+                    meta.timestamp.isoformat(),
+                    meta.git_commit,
+                    meta.git_branch,
+                    meta.python_version,
+                    meta.platform,
+                ),
+            )
+
+            if old_blob_hash is not None:
+                self._release_blob(old_blob_hash)
+
+    def _store_blob(self, value: Any) -> str:
+        """Pickle + gzip the value, insert into ``blobs`` (or bump refcount). Return its hash."""
+        raw = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        h = hashlib.sha256(raw).hexdigest()
+
+        row = self._conn.execute("SELECT 1 FROM blobs WHERE hash = ?", (h,)).fetchone()
+        if row is None:
+            compressed = gzip.compress(raw)
+            self._conn.execute(
+                "INSERT INTO blobs (hash, data, refcount, raw_size, compressed_size) "
+                "VALUES (?, ?, 1, ?, ?)",
+                (h, compressed, len(raw), len(compressed)),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE blobs SET refcount = refcount + 1 WHERE hash = ?",
+                (h,),
+            )
+        return h
+
+    def _release_blob(self, blob_hash: str) -> None:
+        """Decrement a blob's refcount; delete the row if it falls to zero."""
+        self._conn.execute(
+            "UPDATE blobs SET refcount = refcount - 1 WHERE hash = ?",
+            (blob_hash,),
+        )
+        self._conn.execute(
+            "DELETE FROM blobs WHERE hash = ? AND refcount <= 0",
+            (blob_hash,),
+        )
+
+    def _sidecar_path(
+        self,
+        module_path: str,
+        benchmark_name: str,
+        class_name: Optional[str],
+        param_hash: str,
+    ) -> Path:
+        bench_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
+        return self.snapshot_dir / module_path / bench_dir / f"{param_hash}.json"
+
+    def _write_json_sidecar(self, meta: SnapshotMetadata) -> Path:
+        param_hash = self._generate_param_hash(meta.parameters)
+        path = self._sidecar_path(
+            meta.module_path, meta.benchmark_name, meta.class_name, param_hash
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(meta.to_dict(), f, indent=2, default=str)
+        return path
+
+    # ------------------------------------------------------------------
+    # Value serialization (unchanged placeholder semantics)
+    # ------------------------------------------------------------------
 
     def _serialize_dict_safely(self, d: dict) -> dict:
-        """Safely serialize a dictionary, handling generators and other non-serializable values."""
         result = {}
         for key, value in d.items():
             try:
-                # Try to serialize the key
-                serialized_key = self._serialize_value(key)
-                # Try to serialize the value
-                serialized_value = self._serialize_value(value)
-                result[serialized_key] = serialized_value
+                result[self._serialize_value(key)] = self._serialize_value(value)
             except Exception as e:
-                # If we can't serialize this key-value pair, store an error message
                 result[f"__error_{key}__"] = f"Cannot serialize: {e}"
         return result
 
     def _serialize_value(self, value: Any) -> Any:
-        """Safely serialize a value, handling class instances and generators."""
         try:
-            # Try to pickle AND unpickle the value to ensure it's truly serializable
-            # This catches objects that pickle fine but fail to unpickle (e.g., version mismatches)
             pickled = pickle.dumps(value)
-            pickle.loads(pickled)  # Test round-trip
+            pickle.loads(pickled)  # round-trip test
             return value
         except Exception as e:
-            # Catch all exceptions during pickling/unpickling
-            # Common issues: PicklingError, TypeError, AttributeError, ImportError, etc.
-            # Check if it's a generator
             if hasattr(value, "__iter__") and hasattr(value, "__next__"):
-                # It's a generator - cannot be pickled
                 return {
                     "__generator__": True,
                     "__generator_type__": type(value).__name__,
                     "__error__": f"Cannot pickle generator: {e}",
                 }
 
-            # Check if it's a callable (e.g., local function/closure)
             if callable(value):
                 return {
                     "__callable__": True,
@@ -348,22 +673,15 @@ class SnapshotManager:
                     "module": getattr(value, "__module__", ""),
                 }
 
-            # If pickling fails, try to create a serializable representation
-            # First, try to convert iterables to plain lists (for HomogeneousList, etc.)
             if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
                 try:
-                    # Try to convert to a plain list and serialize elements
                     plain_list = [self._serialize_value(item) for item in value]
-                    # Test if the list can be pickled
                     pickle.dumps(plain_list)
                     return plain_list
                 except Exception:
-                    # If list conversion fails, continue to other methods
                     pass
 
             if hasattr(value, "__dict__"):
-                # For class instances, create a dict representation
-                # Safely serialize the __dict__ to avoid generator issues
                 try:
                     serialized_dict = self._serialize_dict_safely(value.__dict__)
                 except Exception as dict_error:
@@ -376,204 +694,28 @@ class SnapshotManager:
                     "__dict__": serialized_dict,
                     "__error__": str(e),
                 }
-            else:
-                # Fall back to string representation
-                return {
-                    "__unpicklable__": True,
-                    "__type__": type(value).__name__,
-                    "__str__": str(value),
-                    "__error__": str(e),
-                }
+
+            return {
+                "__unpicklable__": True,
+                "__type__": type(value).__name__,
+                "__str__": str(value),
+                "__error__": str(e),
+            }
 
     def _deserialize_value(self, value: Any) -> Any:
-        """Deserialize a value, handling class instances and generators."""
-        if isinstance(value, dict) and value.get("__generator__"):
-            # This is a serialized generator - cannot be deserialized
-            return value  # Return the dict representation
-
-        if isinstance(value, dict) and value.get("__class_instance__"):
-            # This is a serialized class instance
-            # For now, we'll return the dict representation
-            # In a real implementation, you might want to reconstruct the class
-            return value
+        # Tagged dicts (__generator__, __class_instance__, ...) are returned as-is;
+        # the Comparator interprets them.
         return value
 
-    def load_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...], class_name: Optional[str] = None
-    ) -> Optional[tuple[Any, SnapshotMetadata]]:
-        """Load a snapshot and its metadata."""
+    # ------------------------------------------------------------------
+    # Metadata helpers (git, python, platform)
+    # ------------------------------------------------------------------
 
-        param_hash = self._generate_param_hash(parameters)
-
-        # Use class name in path if provided
-        if class_name:
-            benchmark_dir = f"{class_name}.{benchmark_name}"
-        else:
-            benchmark_dir = benchmark_name
-        base_path = self.snapshot_dir / module_path / benchmark_dir / param_hash
-        snapshot_path = self._resolve_snapshot_path(base_path)
-        if snapshot_path is None:
-            return None
-
-        try:
-            with self._open_snapshot_file(snapshot_path, "rb") as f:
-                snapshot_data = pickle.load(f)
-
-            serialized_value = snapshot_data["return_value"]
-            metadata = snapshot_data["metadata"]
-
-            # Deserialize the return value
-            return_value = self._deserialize_value(serialized_value)
-
-            return return_value, metadata
-
-        except Exception as e:
-            logger.warning(f"Failed to load snapshot {snapshot_path}: {e}")
-            return None
-
-    def is_failed_capture(
-        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
-    ) -> bool:
-        """Check if a snapshot represents a failed capture."""
-        snapshot_data = self.load_snapshot(benchmark_name, module_path, parameters)
-        if snapshot_data is None:
-            return False
-
-        _, metadata = snapshot_data
-        return metadata.capture_failed
-
-    def list_snapshots(
-        self, module_path: Optional[str] = None, benchmark_name: Optional[str] = None
-    ) -> list[tuple[Path, SnapshotMetadata]]:
-        """List all available snapshots."""
-        snapshots = []
-
-        search_dir = self.snapshot_dir
-        if module_path:
-            search_dir = search_dir / module_path
-        if benchmark_name:
-            search_dir = search_dir / benchmark_name
-
-        if not search_dir.exists():
-            return snapshots
-
-        # Find all .pkl and .pkl.gz files
-        snapshot_files = list(search_dir.rglob("*.pkl"))
-        snapshot_files.extend(search_dir.rglob("*.pkl.gz"))
-        for pkl_file in snapshot_files:
-            try:
-                with self._open_snapshot_file(pkl_file, "rb") as f:
-                    snapshot_data = pickle.load(f)
-                metadata = snapshot_data["metadata"]
-                snapshots.append((pkl_file, metadata))
-            except Exception as e:
-                logger.warning(f"Failed to load snapshot {pkl_file}: {e}")
-                continue
-
-        return snapshots
-
-    def delete_snapshot(
-        self, benchmark_name: str, module_path: str, parameters: tuple[Any, ...]
-    ) -> bool:
-        """Delete a specific snapshot."""
-
-        param_hash = self._generate_param_hash(parameters)
-        base_path = self.snapshot_dir / module_path / benchmark_name / param_hash
-        snapshot_path = self._resolve_snapshot_path(base_path)
-        metadata_path = base_path.with_suffix(".json")
-
-        deleted = False
-
-        if snapshot_path and snapshot_path.exists():
-            snapshot_path.unlink()
-            deleted = True
-
-        if metadata_path.exists():
-            metadata_path.unlink()
-
-        return deleted
-
-    def _write_snapshot_data(self, snapshot_data: dict[str, Any], base_path: Path) -> Path:
-        """Serialize and store snapshot data, compressing if over size threshold."""
-        pickled = pickle.dumps(snapshot_data)
-        if len(pickled) >= self.compress_threshold_bytes:
-            snapshot_path = base_path.with_suffix(".pkl.gz")
-            with gzip.open(snapshot_path, "wb") as f:
-                f.write(pickled)
-        else:
-            snapshot_path = base_path.with_suffix(".pkl")
-            with open(snapshot_path, "wb") as f:
-                f.write(pickled)
-        return snapshot_path
-
-    def _resolve_snapshot_path(self, base_path: Path) -> Optional[Path]:
-        """Return existing snapshot path (compressed or plain) if present."""
-        gz_path = base_path.with_suffix(".pkl.gz")
-        if gz_path.exists():
-            return gz_path
-        pkl_path = base_path.with_suffix(".pkl")
-        if pkl_path.exists():
-            return pkl_path
-        return None
-
-    def _open_snapshot_file(self, path: Path, mode: str):
-        """Open snapshot file, handling gzip when needed."""
-        if path.name.endswith(".pkl.gz"):
-            return gzip.open(path, mode)
-        return open(path, mode)
-
-    def cleanup_empty_directories(self) -> None:
-        """Remove empty directories in the snapshot tree."""
-        for root, dirs, files in os.walk(self.snapshot_dir, topdown=False):
-            for dir_name in dirs:
-                dir_path = Path(root) / dir_name
-                try:
-                    if not any(dir_path.iterdir()):
-                        dir_path.rmdir()
-                except OSError:
-                    pass  # Directory not empty or permission error
-
-    def get_snapshot_stats(self) -> dict[str, Any]:
-        """Get statistics about stored snapshots."""
-        snapshots = self.list_snapshots()
-
-        stats = {
-            "total_snapshots": len(snapshots),
-            "modules": set(),
-            "benchmarks": set(),
-            "oldest_snapshot": None,
-            "newest_snapshot": None,
-            "total_size_bytes": 0,
-        }
-
-        for snapshot_path, metadata in snapshots:
-            stats["modules"].add(metadata.module_path)
-            stats["benchmarks"].add(f"{metadata.module_path}.{metadata.benchmark_name}")
-
-            if stats["oldest_snapshot"] is None or metadata.timestamp < stats["oldest_snapshot"]:
-                stats["oldest_snapshot"] = metadata.timestamp
-
-            if stats["newest_snapshot"] is None or metadata.timestamp > stats["newest_snapshot"]:
-                stats["newest_snapshot"] = metadata.timestamp
-
-            try:
-                stats["total_size_bytes"] += snapshot_path.stat().st_size
-            except OSError:
-                pass
-
-        stats["modules"] = list(stats["modules"])
-        stats["benchmarks"] = list(stats["benchmarks"])
-
-        return stats
-
-    def _generate_param_hash(self, parameters: tuple[Any, ...]) -> str:
-        """Generate a hash for parameter combination."""
-        # Convert parameters to a string representation for hashing
-        param_str = str(parameters)
+    def _generate_param_hash(self, parameters: tuple) -> str:
+        param_str = str(tuple(parameters))
         return hashlib.md5(param_str.encode()).hexdigest()[:16]
 
     def _get_git_commit(self) -> Optional[str]:
-        """Get current git commit hash."""
         try:
             import subprocess
 
@@ -581,13 +723,12 @@ class SnapshotManager:
                 ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
-                return result.stdout.strip()[:12]  # Short hash
+                return result.stdout.strip()[:12]
         except Exception:
             pass
         return None
 
     def _get_git_branch(self) -> Optional[str]:
-        """Get current git branch."""
         try:
             import subprocess
 
@@ -601,13 +742,11 @@ class SnapshotManager:
         return None
 
     def _get_python_version(self) -> str:
-        """Get Python version."""
         import sys
 
         return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
     def _get_platform(self) -> str:
-        """Get platform information."""
         import platform
 
         return f"{platform.system()}-{platform.machine()}"

@@ -4,6 +4,7 @@ Execution tracer for capturing function return values.
 This module implements a tracing mechanism using sys.settrace to capture
 the deepest function call's return value during benchmark execution.
 """
+
 from __future__ import annotations
 
 import sys
@@ -261,34 +262,52 @@ class ExecutionTracer:
         # Skip if module_name is None (can happen in some execution contexts)
         if module_name is None:
             return False
-        
+
         function_name = frame.f_code.co_name
 
         # Skip excluded modules (manual list)
         # Check for exact match or proper module prefix (with dot separator)
-        if any(module_name == excluded or module_name.startswith(excluded + '.') for excluded in self.excluded_modules):
+        if any(
+            module_name == excluded or module_name.startswith(excluded + ".")
+            for excluded in self.excluded_modules
+        ):
             return False
 
         # Skip all standard library modules using sys.stdlib_module_names (Python 3.10+)
-        if hasattr(sys, 'stdlib_module_names'):
+        if hasattr(sys, "stdlib_module_names"):
             # Check if the module or any parent module is in stdlib
-            module_parts = module_name.split('.')
+            module_parts = module_name.split(".")
             for i in range(len(module_parts)):
-                partial_name = '.'.join(module_parts[:i+1])
+                partial_name = ".".join(module_parts[: i + 1])
                 if partial_name in sys.stdlib_module_names:
                     return False
 
         # Skip numpy internals and other common third-party library internals
         numpy_internal_patterns = [
-            'numpy._core', 'numpy.core', 'numpy.lib', 'numpy.ma', 'numpy.array_api',
-            'numpy.f2py', 'numpy.fft', 'numpy.linalg', 'numpy.random', 'numpy.testing',
-            'numpy._', 'numpy.compat', 'numpy.matrixlib'
+            "numpy._core",
+            "numpy.core",
+            "numpy.lib",
+            "numpy.ma",
+            "numpy.array_api",
+            "numpy.f2py",
+            "numpy.fft",
+            "numpy.linalg",
+            "numpy.random",
+            "numpy.testing",
+            "numpy._",
+            "numpy.compat",
+            "numpy.matrixlib",
         ]
         if any(module_name.startswith(pattern) for pattern in numpy_internal_patterns):
             return False
 
         # Skip shapely internals - only trace top-level shapely functions
-        shapely_internal_patterns = ['shapely.lib', 'shapely._', 'shapely.geos', 'shapely.geometry.base']
+        shapely_internal_patterns = [
+            "shapely.lib",
+            "shapely._",
+            "shapely.geos",
+            "shapely.geometry.base",
+        ]
         if any(module_name.startswith(pattern) for pattern in shapely_internal_patterns):
             return False
 
@@ -345,7 +364,6 @@ class ExecutionTracer:
             class_name = value.__class__.__name__
             module_name = getattr(value.__class__, "__module__", "") or ""
 
-        
             # Skip built-in types and common library types
             if module_name in ("builtins", "types", "collections", "typing"):
                 return False

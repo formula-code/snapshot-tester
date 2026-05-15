@@ -1,7 +1,9 @@
 """Comprehensive tests for BenchmarkDiscovery."""
+
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import shutil
 import tempfile
@@ -70,7 +72,7 @@ def track_tracker():
 
         benchmarks = discovery.discover_all()
         assert len(benchmarks) == 5
-        prefixes = {b.name.split('_')[0] for b in benchmarks}
+        prefixes = {b.name.split("_")[0] for b in benchmarks}
         assert prefixes == {"time", "timeraw", "mem", "peakmem", "track"}
 
     def test_function_with_docstring(self, temp_benchmark_dir, discovery):
@@ -166,13 +168,13 @@ class ParameterizedBenchmark:
         assert len(benchmarks) == 1
         benchmark = benchmarks[0]
         assert benchmark.params is not None
-        assert benchmark.param_names == ['number', 'letter']
+        assert benchmark.param_names == ["number", "letter"]
 
         # Test parameter combination generation
         combinations = discovery.generate_parameter_combinations(benchmark)
         assert len(combinations) == 6  # 3 * 2 = 6 combinations
-        assert (1, 'a') in combinations
-        assert (3, 'b') in combinations
+        assert (1, "a") in combinations
+        assert (3, "b") in combinations
 
     def test_params_without_names(self, temp_benchmark_dir, discovery):
         """Test parameters without explicit names."""
@@ -230,7 +232,7 @@ class NestedParams:
 
         combinations = discovery.generate_parameter_combinations(benchmark)
         assert len(combinations) == 6  # 2 * 3 = 6
-        assert ([1, 2], 'x') in combinations
+        assert ([1, 2], "x") in combinations
 
 
 class TestModuleStructure:
@@ -432,4 +434,4 @@ class MyBenchmark:
         assert benchmark.class_name == "MyBenchmark"
         assert benchmark.has_setup is True
         assert benchmark.params is not None
-        assert benchmark.param_names == ['x']
+        assert benchmark.param_names == ["x"]

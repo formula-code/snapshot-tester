@@ -6,6 +6,7 @@ passes or skips on real benchmark repositories (astropy, pandas, shapely).
 
 This mimics the behavior of customtest.sh.
 """
+
 import os
 import shutil
 import subprocess
@@ -29,9 +30,15 @@ def snapshot_dir():
     yield Path(temp_dir)
     shutil.rmtree(temp_dir, ignore_errors=True)
 
+
 def list_snapshot_files(snapshot_dir: Path) -> list[Path]:
-    """List snapshot files, including compressed ones."""
-    return list(snapshot_dir.rglob("*.pkl")) + list(snapshot_dir.rglob("*.pkl.gz"))
+    """List snapshot artefacts produced by a capture.
+
+    Under the SQLite backend, the payloads all live in ``snapshots.db``; the
+    per-test JSON metadata sidecars are 1:1 with snapshot rows, so we use them
+    as the count.
+    """
+    return [p for p in snapshot_dir.rglob("*.json") if p.name != "baseline.json"]
 
 
 def _get_cli_filter() -> Optional[str]:
@@ -71,12 +78,7 @@ def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minu
         list_args.extend(["--filter", filter_pattern])
 
     # Step 1: List benchmarks
-    list_result = subprocess.run(
-        list_args,
-        capture_output=True,
-        text=True,
-        timeout=60
-    )
+    list_result = subprocess.run(list_args, capture_output=True, text=True, timeout=60)
 
     capture_args = [
         "snapshot-tool",
@@ -92,10 +94,7 @@ def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minu
 
     # Step 2: Capture snapshots
     capture_result = subprocess.run(
-        capture_args,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds
+        capture_args, capture_output=True, text=True, timeout=timeout_seconds
     )
 
     verify_args = [
@@ -112,10 +111,7 @@ def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minu
 
     # Step 3: Verify snapshots
     verify_result = subprocess.run(
-        verify_args,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds
+        verify_args, capture_output=True, text=True, timeout=timeout_seconds
     )
 
     return list_result, capture_result, verify_result
@@ -169,9 +165,10 @@ def assert_roundtrip_succeeds(result, step_name: str, repo_name: str):
 
         # Extract pass/fail/skip counts
         import re
-        passed_match = re.search(r'Passed:\s*(\d+)', output)
-        failed_match = re.search(r'Failed:\s*(\d+)', output)
-        skipped_match = re.search(r'Skipped:\s*(\d+)', output)
+
+        passed_match = re.search(r"Passed:\s*(\d+)", output)
+        failed_match = re.search(r"Failed:\s*(\d+)", output)
+        skipped_match = re.search(r"Skipped:\s*(\d+)", output)
 
         if passed_match and failed_match:
             passed = int(passed_match.group(1))
@@ -188,9 +185,7 @@ def assert_roundtrip_succeeds(result, step_name: str, repo_name: str):
             )
 
             # Ensure at least some benchmarks ran
-            assert total > 0, (
-                f"{step_name} for {repo_name} had no benchmarks:\n{output}"
-            )
+            assert total > 0, f"{step_name} for {repo_name} had no benchmarks:\n{output}"
 
             # Ensure at least one benchmark passed (not all skipped)
             assert passed > 0, (
@@ -228,7 +223,10 @@ class TestAstropyRoundtrip:
         snapshots = list_snapshot_files(snapshot_dir)
         if len(snapshots) == 0:
             # All benchmarks were skipped - that's OK, but verify should reflect this
-            assert "skipped" in verify_result.stdout.lower() or "no snapshots" in verify_result.stdout.lower()
+            assert (
+                "skipped" in verify_result.stdout.lower()
+                or "no snapshots" in verify_result.stdout.lower()
+            )
 
 
 class TestPandasRoundtrip:
@@ -260,7 +258,10 @@ class TestPandasRoundtrip:
         snapshots = list_snapshot_files(snapshot_dir)
         if len(snapshots) == 0:
             # All benchmarks were skipped - that's OK
-            assert "skipped" in verify_result.stdout.lower() or "no snapshots" in verify_result.stdout.lower()
+            assert (
+                "skipped" in verify_result.stdout.lower()
+                or "no snapshots" in verify_result.stdout.lower()
+            )
 
 
 class TestShapelyRoundtrip:
@@ -313,12 +314,7 @@ class TestShapelyRoundtrip:
         if benchmark_timeout is not None:
             capture_args.extend(["--timeout", str(benchmark_timeout)])
 
-        capture_result = subprocess.run(
-            capture_args,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        capture_result = subprocess.run(capture_args, capture_output=True, text=True, timeout=300)
         assert_roundtrip_succeeds(capture_result, "Capture", "shapely_benchmarks")
 
         # Verify three times - all should pass with no failures
@@ -335,12 +331,7 @@ class TestShapelyRoundtrip:
             if benchmark_timeout is not None:
                 verify_args.extend(["--timeout", str(benchmark_timeout)])
 
-            verify_result = subprocess.run(
-                verify_args,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+            verify_result = subprocess.run(verify_args, capture_output=True, text=True, timeout=300)
 
             assert_roundtrip_succeeds(verify_result, "Verify", "shapely_benchmarks")
 
@@ -354,11 +345,7 @@ class TestAllReposRoundtrip:
         Test roundtrip for all three repos sequentially.
         This is the equivalent of running customtest.sh.
         """
-        repos = [
-            "astropy_benchmarks",
-            "pandas_benchmarks",
-            "shapely_benchmarks"
-        ]
+        repos = ["astropy_benchmarks", "pandas_benchmarks", "shapely_benchmarks"]
 
         results = {}
 
@@ -376,31 +363,32 @@ class TestAllReposRoundtrip:
             )
 
             results[repo_name] = {
-                'list': list_result.returncode,
-                'capture': capture_result.returncode,
-                'verify': verify_result.returncode,
-                'verify_output': verify_result.stdout + verify_result.stderr
+                "list": list_result.returncode,
+                "capture": capture_result.returncode,
+                "verify": verify_result.returncode,
+                "verify_output": verify_result.stdout + verify_result.stderr,
             }
 
         # All operations should succeed
         failed_repos = []
         for repo_name, result in results.items():
-            if result['list'] != 0:
+            if result["list"] != 0:
                 failed_repos.append(f"{repo_name}: list failed")
-            if result['capture'] not in [0, 1]:
+            if result["capture"] not in [0, 1]:
                 failed_repos.append(f"{repo_name}: capture crashed")
-            if result['verify'] != 0:
+            if result["verify"] != 0:
                 failed_repos.append(f"{repo_name}: verify failed")
 
             # Check for failures in verify output
-            output_lower = result['verify_output'].lower()
+            output_lower = result["verify_output"].lower()
             if "failed" in output_lower and "0 failed" not in output_lower:
                 # Look for actual failure counts
                 import re
-                failure_match = re.search(r'(\d+)\s+failed', output_lower)
+
+                failure_match = re.search(r"(\d+)\s+failed", output_lower)
                 if failure_match and int(failure_match.group(1)) > 0:
                     failed_repos.append(f"{repo_name}: verify had failures")
 
-        assert len(failed_repos) == 0, (
-            "Some repositories failed roundtrip test:\n" + "\n".join(failed_repos)
+        assert len(failed_repos) == 0, "Some repositories failed roundtrip test:\n" + "\n".join(
+            failed_repos
         )
