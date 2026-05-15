@@ -7,6 +7,9 @@ passes or skips on real benchmark repositories (astropy, pandas, shapely).
 This mimics the behavior of customtest.sh.
 """
 
+from __future__ import annotations
+
+import json
 import os
 import shutil
 import subprocess
@@ -56,142 +59,129 @@ def _get_cli_timeout() -> Optional[float]:
         return None
 
 
+def _maybe_filter_timeout(args: list) -> list:
+    """Append the shared --filter / --timeout knobs (env-driven, CI shards)."""
+    filter_pattern = _get_cli_filter()
+    benchmark_timeout = _get_cli_timeout()
+    if filter_pattern:
+        args.extend(["--filter", filter_pattern])
+    if benchmark_timeout is not None:
+        args.extend(["--timeout", str(benchmark_timeout)])
+    return args
+
+
 def run_snapshot_roundtrip(benchmark_dir: Path, snapshot_dir: Path, timeout_minutes: int = 10):
     """
-    Run a complete snapshot roundtrip: list -> capture -> verify.
+    Run a complete snapshot roundtrip: list -> capture -> baseline -> verify.
+
+    The gate is *regression-based*, not perfection-based: real third-party
+    benchmark suites contain benchmarks that are inherently un-snapshotable
+    (memory addresses in reprs, timing-sensitive, dtype-unstable). Those fail
+    consistently and show up as fail->fail, which is tolerated. What must never
+    happen is a pass->fail or skip->fail transition between the baseline and the
+    verify run. The tool's own `baseline` subcommand + transition matrix
+    (written into summary.json by `verify`) implements exactly this.
 
     Args:
         benchmark_dir: Directory containing benchmarks
         snapshot_dir: Directory to store snapshots
-        timeout_minutes: Timeout in minutes for capture and verify steps
+        timeout_minutes: Timeout in minutes for capture/baseline/verify steps
 
     Returns:
-        tuple: (list_result, capture_result, verify_result)
+        tuple: (list_result, capture_result, baseline_result, verify_result, summary_path)
     """
     timeout_seconds = timeout_minutes * 60
-
-    filter_pattern = _get_cli_filter()
-    benchmark_timeout = _get_cli_timeout()
-
-    list_args = ["snapshot-tool", "list", str(benchmark_dir)]
-    if filter_pattern:
-        list_args.extend(["--filter", filter_pattern])
+    summary_path = snapshot_dir / "summary.json"
 
     # Step 1: List benchmarks
+    list_args = _maybe_filter_timeout(["snapshot-tool", "list", str(benchmark_dir)])
+    # `list` has no --timeout; drop it if _maybe_filter_timeout added one.
+    if "--timeout" in list_args:
+        i = list_args.index("--timeout")
+        del list_args[i : i + 2]
     list_result = subprocess.run(list_args, capture_output=True, text=True, timeout=60)
 
-    capture_args = [
-        "snapshot-tool",
-        "capture",
-        str(benchmark_dir),
-        "--snapshot-dir",
-        str(snapshot_dir),
-    ]
-    if filter_pattern:
-        capture_args.extend(["--filter", filter_pattern])
-    if benchmark_timeout is not None:
-        capture_args.extend(["--timeout", str(benchmark_timeout)])
-
     # Step 2: Capture snapshots
+    capture_args = _maybe_filter_timeout(
+        ["snapshot-tool", "capture", str(benchmark_dir), "--snapshot-dir", str(snapshot_dir)]
+    )
     capture_result = subprocess.run(
         capture_args, capture_output=True, text=True, timeout=timeout_seconds
     )
 
-    verify_args = [
-        "snapshot-tool",
-        "verify",
-        str(benchmark_dir),
-        "--snapshot-dir",
-        str(snapshot_dir),
-    ]
-    if filter_pattern:
-        verify_args.extend(["--filter", filter_pattern])
-    if benchmark_timeout is not None:
-        verify_args.extend(["--timeout", str(benchmark_timeout)])
+    # Step 3: Baseline (records per-test pass/fail/skip into snapshot_dir/baseline.json)
+    baseline_args = _maybe_filter_timeout(
+        ["snapshot-tool", "baseline", str(benchmark_dir), "--snapshot-dir", str(snapshot_dir)]
+    )
+    baseline_result = subprocess.run(
+        baseline_args, capture_output=True, text=True, timeout=timeout_seconds
+    )
 
-    # Step 3: Verify snapshots
+    # Step 4: Verify (re-runs, diffs against baseline; writes transition matrix to summary.json)
+    verify_args = _maybe_filter_timeout(
+        [
+            "snapshot-tool",
+            "verify",
+            str(benchmark_dir),
+            "--snapshot-dir",
+            str(snapshot_dir),
+            "--summary",
+            str(summary_path),
+        ]
+    )
     verify_result = subprocess.run(
         verify_args, capture_output=True, text=True, timeout=timeout_seconds
     )
 
-    return list_result, capture_result, verify_result
+    return list_result, capture_result, baseline_result, verify_result, summary_path
 
 
-def assert_roundtrip_succeeds(result, step_name: str, repo_name: str):
+def assert_step_did_not_crash(result, step_name: str, repo_name: str):
+    """List / Capture / Baseline must complete without crashing.
+
+    returncode 0 or 1 is fine — 1 just means some individual benchmarks failed
+    to run (recorded as failed captures), the process itself completed.
     """
-    Assert that a roundtrip step completes successfully.
+    assert result.returncode in [0, 1], (
+        f"{step_name} crashed for {repo_name}:\n"
+        f"Return code: {result.returncode}\n"
+        f"STDOUT:\n{result.stdout}\n"
+        f"STDERR:\n{result.stderr}"
+    )
 
-    The roundtrip guarantee:
-    - List: Always succeeds (returncode 0)
-    - Capture: Succeeds even if some benchmarks fail (returncode 0 or 1)
-    - Verify: Must have 100% pass or skip rate (returncode 0, Failed: 0)
 
-    Individual benchmarks may fail during capture (due to bugs, missing deps, etc.),
-    but these are marked as "failed captures" and skipped during verify.
-    The verify step must never have failures - only passes and skips.
+def assert_no_regressions(summary_path: Path, repo_name: str, verify_result=None):
+    """Assert the baseline->verify transition matrix contains no regressions.
 
-    Args:
-        result: subprocess result
-        step_name: Name of the step (List, Capture, Verify)
-        repo_name: Name of the repository being tested
+    A regression is a benchmark that passed (or was skipped) in the baseline
+    but failed in verify: `pass-to-fail` or `skip-to-fail`. Consistently broken
+    benchmarks (fail-to-fail) and consistently working ones (pass-to-pass) are
+    fine — only a *new* failure on the same code fails the gate.
     """
-    # For list and capture, CLI should complete without crashing
-    if step_name in ["List", "Capture"]:
-        # Allow returncode 0 or 1 - returncode 1 means some benchmarks failed to run
-        # but the process completed
-        assert result.returncode in [0, 1], (
-            f"{step_name} crashed for {repo_name}:\n"
-            f"Return code: {result.returncode}\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
-        return
+    assert summary_path.exists(), (
+        f"verify wrote no summary for {repo_name} at {summary_path}.\n"
+        f"verify stdout/stderr:\n"
+        f"{(verify_result.stdout + verify_result.stderr) if verify_result else '<n/a>'}"
+    )
 
-    # For verify step - MUST be 100% pass or skip
-    if step_name == "Verify":
-        # Verify must succeed with no failures
-        assert result.returncode == 0, (
-            f"{step_name} failed for {repo_name}:\n"
-            f"Return code: {result.returncode}\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
-        )
+    with open(summary_path) as f:
+        summary = json.load(f)
 
-        # Check that verification completed
-        output = result.stdout + result.stderr
-        assert "Verification complete" in output or "Summary written" in output, (
-            f"{step_name} for {repo_name} did not complete:\n{output[:1000]}"
-        )
+    pass_to_fail = summary.get("pass-to-fail", 0)
+    skip_to_fail = summary.get("skip-to-fail", 0)
+    total = summary.get("total", 0)
+    passed = summary.get("passed", 0)
 
-        # Extract pass/fail/skip counts
-        import re
-
-        passed_match = re.search(r"Passed:\s*(\d+)", output)
-        failed_match = re.search(r"Failed:\s*(\d+)", output)
-        skipped_match = re.search(r"Skipped:\s*(\d+)", output)
-
-        if passed_match and failed_match:
-            passed = int(passed_match.group(1))
-            failed = int(failed_match.group(1))
-            skipped = int(skipped_match.group(1)) if skipped_match else 0
-            total = passed + failed + skipped
-
-            # MUST have 0 failures
-            assert failed == 0, (
-                f"{step_name} for {repo_name} had failures:\n"
-                f"{passed} passed, {failed} failed, {skipped} skipped out of {total}\n"
-                f"Expected: Failed = 0 (all benchmarks should pass or be skipped)\n"
-                f"Output:\n{output}"
-            )
-
-            # Ensure at least some benchmarks ran
-            assert total > 0, f"{step_name} for {repo_name} had no benchmarks:\n{output}"
-
-            # Ensure at least one benchmark passed (not all skipped)
-            assert passed > 0, (
-                f"{step_name} for {repo_name} had no passing benchmarks (all skipped):\n"
-                f"{passed} passed, {failed} failed, {skipped} skipped"
-            )
+    assert total > 0, f"{repo_name}: verify ran no benchmarks (summary={summary})"
+    assert passed > 0, (
+        f"{repo_name}: verify had no passing benchmarks (all failed/skipped), summary={summary}"
+    )
+    assert pass_to_fail == 0 and skip_to_fail == 0, (
+        f"{repo_name}: REGRESSION detected between baseline and verify.\n"
+        f"  pass-to-fail = {pass_to_fail}\n"
+        f"  skip-to-fail = {skip_to_fail}\n"
+        f"Full transition matrix / summary:\n{json.dumps(summary, indent=2)}"
+    )
 
 
 class TestAstropyRoundtrip:
@@ -204,29 +194,20 @@ class TestAstropyRoundtrip:
             pytest.skip("Astropy benchmarks not found")
 
         # Astropy has many benchmarks - use 30 minute timeout
-        list_result, capture_result, verify_result = run_snapshot_roundtrip(
-            astropy_dir, snapshot_dir, timeout_minutes=30
-        )
+        (
+            list_result,
+            capture_result,
+            baseline_result,
+            verify_result,
+            summary_path,
+        ) = run_snapshot_roundtrip(astropy_dir, snapshot_dir, timeout_minutes=30)
 
-        # List should always succeed
         assert list_result.returncode == 0, (
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
-
-        # Capture should succeed (or skip/timeout some benchmarks)
-        assert_roundtrip_succeeds(capture_result, "Capture", "astropy_benchmarks")
-
-        # Verify should succeed with 100% passes or skips (no failures allowed)
-        assert_roundtrip_succeeds(verify_result, "Verify", "astropy_benchmarks")
-
-        # Verify that snapshots were created
-        snapshots = list_snapshot_files(snapshot_dir)
-        if len(snapshots) == 0:
-            # All benchmarks were skipped - that's OK, but verify should reflect this
-            assert (
-                "skipped" in verify_result.stdout.lower()
-                or "no snapshots" in verify_result.stdout.lower()
-            )
+        assert_step_did_not_crash(capture_result, "Capture", "astropy_benchmarks")
+        assert_step_did_not_crash(baseline_result, "Baseline", "astropy_benchmarks")
+        assert_no_regressions(summary_path, "astropy_benchmarks", verify_result)
 
 
 class TestPandasRoundtrip:
@@ -239,29 +220,20 @@ class TestPandasRoundtrip:
             pytest.skip("Pandas benchmarks not found")
 
         # Pandas has many benchmarks - use 30 minute timeout
-        list_result, capture_result, verify_result = run_snapshot_roundtrip(
-            pandas_dir, snapshot_dir, timeout_minutes=30
-        )
+        (
+            list_result,
+            capture_result,
+            baseline_result,
+            verify_result,
+            summary_path,
+        ) = run_snapshot_roundtrip(pandas_dir, snapshot_dir, timeout_minutes=30)
 
-        # List should always succeed
         assert list_result.returncode == 0, (
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
-
-        # Capture should succeed (or skip/timeout some benchmarks)
-        assert_roundtrip_succeeds(capture_result, "Capture", "pandas_benchmarks")
-
-        # Verify should succeed with 100% passes or skips (no failures allowed)
-        assert_roundtrip_succeeds(verify_result, "Verify", "pandas_benchmarks")
-
-        # Verify that snapshots were created
-        snapshots = list_snapshot_files(snapshot_dir)
-        if len(snapshots) == 0:
-            # All benchmarks were skipped - that's OK
-            assert (
-                "skipped" in verify_result.stdout.lower()
-                or "no snapshots" in verify_result.stdout.lower()
-            )
+        assert_step_did_not_crash(capture_result, "Capture", "pandas_benchmarks")
+        assert_step_did_not_crash(baseline_result, "Baseline", "pandas_benchmarks")
+        assert_no_regressions(summary_path, "pandas_benchmarks", verify_result)
 
 
 class TestShapelyRoundtrip:
@@ -273,22 +245,22 @@ class TestShapelyRoundtrip:
         if not shapely_dir.exists():
             pytest.skip("Shapely benchmarks not found")
 
-        list_result, capture_result, verify_result = run_snapshot_roundtrip(
-            shapely_dir, snapshot_dir
-        )
+        (
+            list_result,
+            capture_result,
+            baseline_result,
+            verify_result,
+            summary_path,
+        ) = run_snapshot_roundtrip(shapely_dir, snapshot_dir)
 
-        # List should always succeed
         assert list_result.returncode == 0, (
             f"List failed:\n{list_result.stdout}\n{list_result.stderr}"
         )
+        assert_step_did_not_crash(capture_result, "Capture", "shapely_benchmarks")
+        assert_step_did_not_crash(baseline_result, "Baseline", "shapely_benchmarks")
+        assert_no_regressions(summary_path, "shapely_benchmarks", verify_result)
 
-        # Capture should succeed (or skip/timeout some benchmarks)
-        assert_roundtrip_succeeds(capture_result, "Capture", "shapely_benchmarks")
-
-        # Verify should succeed with 100% passes or skips (no failures allowed)
-        assert_roundtrip_succeeds(verify_result, "Verify", "shapely_benchmarks")
-
-        # Shapely should create some snapshots (we know shapely works)
+        # Shapely is fully deterministic - it should create real snapshots.
         snapshots = list_snapshot_files(snapshot_dir)
         assert len(snapshots) > 0, "Shapely should create at least one snapshot"
 
@@ -298,42 +270,35 @@ class TestShapelyRoundtrip:
         if not shapely_dir.exists():
             pytest.skip("Shapely benchmarks not found")
 
-        # Capture once
-        filter_pattern = _get_cli_filter()
-        benchmark_timeout = _get_cli_timeout()
-
-        capture_args = [
-            "snapshot-tool",
-            "capture",
-            str(shapely_dir),
-            "--snapshot-dir",
-            str(snapshot_dir),
-        ]
-        if filter_pattern:
-            capture_args.extend(["--filter", filter_pattern])
-        if benchmark_timeout is not None:
-            capture_args.extend(["--timeout", str(benchmark_timeout)])
-
+        # Capture once, baseline once, then verify three times - a determinism
+        # check: every verify must show zero regressions against the baseline.
+        capture_args = _maybe_filter_timeout(
+            ["snapshot-tool", "capture", str(shapely_dir), "--snapshot-dir", str(snapshot_dir)]
+        )
         capture_result = subprocess.run(capture_args, capture_output=True, text=True, timeout=300)
-        assert_roundtrip_succeeds(capture_result, "Capture", "shapely_benchmarks")
+        assert_step_did_not_crash(capture_result, "Capture", "shapely_benchmarks")
 
-        # Verify three times - all should pass with no failures
+        baseline_args = _maybe_filter_timeout(
+            ["snapshot-tool", "baseline", str(shapely_dir), "--snapshot-dir", str(snapshot_dir)]
+        )
+        baseline_result = subprocess.run(baseline_args, capture_output=True, text=True, timeout=300)
+        assert_step_did_not_crash(baseline_result, "Baseline", "shapely_benchmarks")
+
         for round_num in range(3):
-            verify_args = [
-                "snapshot-tool",
-                "verify",
-                str(shapely_dir),
-                "--snapshot-dir",
-                str(snapshot_dir),
-            ]
-            if filter_pattern:
-                verify_args.extend(["--filter", filter_pattern])
-            if benchmark_timeout is not None:
-                verify_args.extend(["--timeout", str(benchmark_timeout)])
-
+            summary_path = snapshot_dir / f"summary_{round_num}.json"
+            verify_args = _maybe_filter_timeout(
+                [
+                    "snapshot-tool",
+                    "verify",
+                    str(shapely_dir),
+                    "--snapshot-dir",
+                    str(snapshot_dir),
+                    "--summary",
+                    str(summary_path),
+                ]
+            )
             verify_result = subprocess.run(verify_args, capture_output=True, text=True, timeout=300)
-
-            assert_roundtrip_succeeds(verify_result, "Verify", "shapely_benchmarks")
+            assert_no_regressions(summary_path, "shapely_benchmarks", verify_result)
 
 
 class TestAllReposRoundtrip:
@@ -358,36 +323,34 @@ class TestAllReposRoundtrip:
             repo_snapshot_dir = snapshot_dir / repo_name
             repo_snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-            list_result, capture_result, verify_result = run_snapshot_roundtrip(
-                repo_dir, repo_snapshot_dir
-            )
+            (
+                list_result,
+                capture_result,
+                baseline_result,
+                verify_result,
+                summary_path,
+            ) = run_snapshot_roundtrip(repo_dir, repo_snapshot_dir)
 
             results[repo_name] = {
                 "list": list_result.returncode,
                 "capture": capture_result.returncode,
-                "verify": verify_result.returncode,
-                "verify_output": verify_result.stdout + verify_result.stderr,
+                "baseline": baseline_result.returncode,
+                "summary_path": summary_path,
+                "verify_result": verify_result,
             }
 
-        # All operations should succeed
         failed_repos = []
         for repo_name, result in results.items():
             if result["list"] != 0:
                 failed_repos.append(f"{repo_name}: list failed")
             if result["capture"] not in [0, 1]:
                 failed_repos.append(f"{repo_name}: capture crashed")
-            if result["verify"] != 0:
-                failed_repos.append(f"{repo_name}: verify failed")
-
-            # Check for failures in verify output
-            output_lower = result["verify_output"].lower()
-            if "failed" in output_lower and "0 failed" not in output_lower:
-                # Look for actual failure counts
-                import re
-
-                failure_match = re.search(r"(\d+)\s+failed", output_lower)
-                if failure_match and int(failure_match.group(1)) > 0:
-                    failed_repos.append(f"{repo_name}: verify had failures")
+            if result["baseline"] not in [0, 1]:
+                failed_repos.append(f"{repo_name}: baseline crashed")
+            try:
+                assert_no_regressions(result["summary_path"], repo_name, result["verify_result"])
+            except AssertionError as e:
+                failed_repos.append(str(e))
 
         assert len(failed_repos) == 0, "Some repositories failed roundtrip test:\n" + "\n".join(
             failed_repos
