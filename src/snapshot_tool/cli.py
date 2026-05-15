@@ -327,7 +327,7 @@ class SnapshotCLI:
         else:
             comp_config.rtol = self.config.tolerance["rtol"]
             comp_config.atol = self.config.tolerance["atol"]
-            comp_config.equal_nan = self.config.tolerance.get("equal_nan", False)
+            comp_config.equal_nan = self.config.tolerance.get("equal_nan", True)
 
         comparator = Comparator(comp_config)
 
@@ -645,7 +645,7 @@ class SnapshotCLI:
         else:
             comp_config.rtol = self.config.tolerance["rtol"]
             comp_config.atol = self.config.tolerance["atol"]
-            comp_config.equal_nan = self.config.tolerance.get("equal_nan", False)
+            comp_config.equal_nan = self.config.tolerance.get("equal_nan", True)
         comparator = Comparator(comp_config)
 
         # Discover benchmarks

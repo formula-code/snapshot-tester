@@ -85,7 +85,11 @@ class ComparisonConfig:
 
     rtol: float = 1e-5
     atol: float = 1e-8
-    equal_nan: bool = False
+    # Snapshot semantics: a deterministic NaN at the same position on both the
+    # captured and the re-run output means the result did NOT change, so it
+    # should compare equal. (numpy.isclose defaults this False; for snapshot
+    # regression testing True is the correct default.)
+    equal_nan: bool = True
     strict_types: bool = True
     strict_shapes: bool = True
     ignore_order: bool = False

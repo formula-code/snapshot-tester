@@ -88,11 +88,29 @@ class TestNumpyArrayComparison:
         assert result.match is False
 
     def test_nan_handling(self, comparator):
-        """Test handling of NaN values."""
+        """NaN at the same position compares equal under snapshot semantics."""
         arr1 = np.array([1.0, np.nan, 3.0])
         arr2 = np.array([1.0, np.nan, 3.0])
 
-        # NaN != NaN by default, so this should fail
+        # equal_nan defaults to True for snapshot testing: identical NaN
+        # placement means the output did not change.
+        result = comparator.compare(arr1, arr2)
+        assert result.match is True
+
+    def test_nan_handling_equal_nan_false(self):
+        """With equal_nan=False, NaN != NaN (numpy.isclose semantics)."""
+        from snapshot_tool.comparator import Comparator, ComparisonConfig
+
+        strict = Comparator(ComparisonConfig(equal_nan=False))
+        arr1 = np.array([1.0, np.nan, 3.0])
+        arr2 = np.array([1.0, np.nan, 3.0])
+        assert strict.compare(arr1, arr2).match is False
+
+    def test_nan_position_mismatch_still_fails(self, comparator):
+        """NaN in different positions is a real change and must fail."""
+        arr1 = np.array([1.0, np.nan, 3.0])
+        arr2 = np.array([1.0, 2.0, np.nan])
+
         result = comparator.compare(arr1, arr2)
         assert result.match is False
 
