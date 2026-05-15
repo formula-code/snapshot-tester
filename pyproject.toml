@@ -55,6 +55,9 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py38"
+# tests/test_repos/ holds vendored third-party benchmark sources (astropy,
+# pandas, shapely). They are not our code and must not be linted/formatted.
+extend-exclude = ["tests/test_repos"]
 
 [tool.ruff.lint]
 select = [
@@ -68,8 +71,22 @@ select = [
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
-    "UP007", # Use X | Y for union types (not compatible with Python 3.8-3.9)
+    # The package supports Python 3.8+ and deliberately uses typing.Optional /
+    # typing.List with `from __future__ import annotations`. The pyupgrade rules
+    # that rewrite to 3.10+ syntax are therefore intentionally disabled.
+    "UP006", # Use `list` instead of `List` for type annotations
+    "UP007", # Use `X | Y` for union types
+    "UP035", # Deprecated typing import (List, etc.)
+    "UP045", # Use `X | None` for Optional
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py configures package logging before importing submodules so their
+# module-level loggers inherit the handler — imports are deliberately not at top.
+"src/snapshot_tool/__init__.py" = ["E402"]
+# Test modules use a logging.basicConfig() preamble before imports, keep unused
+# locals for readability, and intentionally exercise lambdas/generators.
+"tests/**" = ["E402", "F841", "B007", "C401", "E731"]
 
 [tool.mypy]
 python_version = "3.8"
