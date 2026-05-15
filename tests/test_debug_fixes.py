@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 """
 Simple test script to verify the snapshot testing tool fixes.
 """
@@ -50,9 +51,7 @@ def test_simple_benchmark():
     result = runner.run_benchmark(simple_benchmark)
 
     if result and result.success:
-        logger.info(
-            f"[PASS] Successfully captured return value: {type(result.return_value)}"
-        )
+        logger.info(f"[PASS] Successfully captured return value: {type(result.return_value)}")
         logger.info(f"  Function: {result.function_name}")
         logger.info(f"  Module: {result.module_name}")
         logger.info(f"  Depth: {result.depth}")
@@ -102,9 +101,7 @@ def test_parameterized_benchmark():
         result = runner.run_benchmark(param_benchmark, params)
 
         if result and result.success:
-            logger.info(
-                f"[PASS] Successfully captured return value: {type(result.return_value)}"
-            )
+            logger.info(f"[PASS] Successfully captured return value: {type(result.return_value)}")
             logger.info(f"  Function: {result.function_name}")
             logger.info(f"  Module: {result.module_name}")
             logger.info(f"  Depth: {result.depth}")

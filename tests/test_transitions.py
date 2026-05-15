@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from snapshot_tool.transitions import compute_transitions
 import random
+
+from snapshot_tool.transitions import compute_transitions
 
 
 def test_compute_transitions_basic_identity():
@@ -42,11 +43,11 @@ def test_compute_transitions_mixed_and_legacy():
         "E": "pass",
     }
     verify = {
-        "A": "fail",   # pass->fail
-        "B": "pass",   # fail->pass
-        "C": "pass",   # legacy fail->pass
-        "D": "fail",   # skip->fail
-        "F": "pass",   # new test not in baseline; ignored
+        "A": "fail",  # pass->fail
+        "B": "pass",  # fail->pass
+        "C": "pass",  # legacy fail->pass
+        "D": "fail",  # skip->fail
+        "F": "pass",  # new test not in baseline; ignored
     }
     out = compute_transitions(baseline, verify)
     assert out.get("pass-to-fail", 0) == 1

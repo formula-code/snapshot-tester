@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 """
 Test script using minimal benchmarks to verify the snapshot testing tool fixes.
 """

@@ -88,7 +88,7 @@ class SnapshotMetadata:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict) -> "SnapshotMetadata":
+    def from_dict(cls, data: dict) -> SnapshotMetadata:
         if isinstance(data["timestamp"], str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
         return cls(**data)

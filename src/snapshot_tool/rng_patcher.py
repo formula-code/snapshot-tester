@@ -12,10 +12,11 @@ The patcher handles:
 - PyTorch random number generation (if installed)
 - TensorFlow random number generation (if installed)
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class RNGPatcher:
     def _patch_python_random(self):
         """Patch Python's built-in random module."""
         import random
+
         random.seed(self.seed)
         logger.debug("Patched Python random module")
 
@@ -71,6 +73,7 @@ class RNGPatcher:
         """Patch NumPy's legacy random API (compatible with numpy 1.12+/2017)."""
         try:
             import numpy as np
+
             np.random.seed(self.seed)
             logger.debug("Patched NumPy legacy random API")
         except ImportError:
@@ -80,6 +83,7 @@ class RNGPatcher:
         """Patch PyTorch random number generation."""
         try:
             import torch  # type: ignore
+
             torch.manual_seed(self.seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(self.seed)
@@ -91,6 +95,7 @@ class RNGPatcher:
         """Patch TensorFlow random number generation."""
         try:
             import tensorflow as tf  # type: ignore
+
             tf.random.set_seed(self.seed)
             logger.debug("Patched TensorFlow random")
         except ImportError:
@@ -154,16 +159,19 @@ def reset_all_rngs(seed: int = 42):
         seed: The deterministic seed to use.
     """
     import random
+
     random.seed(seed)
 
     try:
         import numpy as np
+
         np.random.seed(seed)
     except ImportError:
         pass
 
     try:
         import torch  # type: ignore
+
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
@@ -172,6 +180,7 @@ def reset_all_rngs(seed: int = 42):
 
     try:
         import tensorflow as tf  # type: ignore
+
         tf.random.set_seed(seed)
     except ImportError:
         pass

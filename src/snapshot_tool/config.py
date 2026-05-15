@@ -4,6 +4,7 @@ Configuration management for snapshot testing.
 This module handles loading and managing configuration settings
 for the snapshot testing tool.
 """
+
 from __future__ import annotations
 
 import json
@@ -49,12 +50,12 @@ class SnapshotConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SnapshotConfig":
+    def from_dict(cls, data: dict[str, Any]) -> SnapshotConfig:
         """Create from dictionary."""
         return cls(**data)
 
     @classmethod
-    def from_file(cls, config_path: Path) -> "SnapshotConfig":
+    def from_file(cls, config_path: Path) -> SnapshotConfig:
         """Load configuration from JSON file."""
         if not config_path.exists():
             return cls()

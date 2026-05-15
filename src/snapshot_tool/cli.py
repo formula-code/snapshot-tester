@@ -4,6 +4,7 @@ Command-line interface for snapshot testing.
 This module provides CLI commands for capturing and verifying snapshots
 of ASV benchmark outputs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -180,7 +181,7 @@ class SnapshotCLI:
 
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
-        timeout = args.timeout if hasattr(args, 'timeout') else None
+        timeout = args.timeout if hasattr(args, "timeout") else None
 
         logger.info(f"Capturing snapshots from {benchmark_dir}")
         logger.info(f"Storing snapshots in {snapshot_dir}")
@@ -196,7 +197,9 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
 
         captured_count = 0
 
@@ -231,7 +234,9 @@ class SnapshotCLI:
                         if result and result.error:
                             error_type = type(result.error).__name__
                             error_msg = str(result.error)
-                            failure_reason = f"{error_type}: {error_msg}" if error_msg else error_type
+                            failure_reason = (
+                                f"{error_type}: {error_msg}" if error_msg else error_type
+                            )
                         else:
                             failure_reason = "Unknown error (no exception details)"
 
@@ -243,7 +248,9 @@ class SnapshotCLI:
                             failure_reason=failure_reason,
                             class_name=benchmark.class_name,
                         )
-                        logger.warning(f"  Failed to capture with params: {params} - {failure_reason}")
+                        logger.warning(
+                            f"  Failed to capture with params: {params} - {failure_reason}"
+                        )
                         if self.config.verbose and result and result.error:
                             import traceback
 
@@ -301,7 +308,7 @@ class SnapshotCLI:
 
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
-        timeout = args.timeout if hasattr(args, 'timeout') else None
+        timeout = args.timeout if hasattr(args, "timeout") else None
 
         logger.info(f"Verifying benchmarks in {benchmark_dir}")
         logger.info(f"Comparing against snapshots in {snapshot_dir}")
@@ -329,7 +336,9 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
 
         total_tests = 0
         passed_tests = 0
@@ -394,7 +403,9 @@ class SnapshotCLI:
                     if not result or not result.success:
                         # Benchmark failed during verify but succeeded during capture
                         # This is a real failure (non-deterministic benchmark or environment change)
-                        logger.error(f"  [FAIL] Failed to run with params: {params} (succeeded during capture)")
+                        logger.error(
+                            f"  [FAIL] Failed to run with params: {params} (succeeded during capture)"
+                        )
                         failed_tests += 1
                         total_tests += 1
                         test_id = storage.get_test_id(
@@ -587,7 +598,7 @@ class SnapshotCLI:
             ]:
                 logger.info(f"  {k}: {summary.get(k, 0)}")
 
-        summary_path = args.summary if hasattr(args, 'summary') else Path("summary.json")
+        summary_path = args.summary if hasattr(args, "summary") else Path("summary.json")
         try:
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=2)
@@ -615,7 +626,7 @@ class SnapshotCLI:
 
         benchmark_dir = args.benchmark_dir
         snapshot_dir = self.config.get_snapshot_dir()
-        timeout = args.timeout if hasattr(args, 'timeout') else None
+        timeout = args.timeout if hasattr(args, "timeout") else None
 
         logger.info(f"Baselining benchmarks in {benchmark_dir}")
         logger.info(f"Using snapshots in {snapshot_dir}")
@@ -641,7 +652,9 @@ class SnapshotCLI:
         discovery = BenchmarkDiscovery(benchmark_dir)
         benchmarks = discovery.discover_all()
         if args.filter:
-            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
 
         # Collect entries
         total = 0
@@ -678,27 +691,21 @@ class SnapshotCLI:
                     if snapshot_data is None:
                         entries[test_id] = "skip"
                         skipped += 1
-                        logger.info(
-                            f"  [SKIP: NO SNAPSHOT] No snapshot for params: {params}"
-                        )
+                        logger.info(f"  [SKIP: NO SNAPSHOT] No snapshot for params: {params}")
                         continue
 
                     expected_value, metadata = snapshot_data
                     if metadata.capture_failed:
                         entries[test_id] = "skip"
                         skipped += 1
-                        logger.info(
-                            f"  [SKIP: FAILED CAPTURE] Failed capture for params: {params}"
-                        )
+                        logger.info(f"  [SKIP: FAILED CAPTURE] Failed capture for params: {params}")
                         continue
 
                     result = runner.run_benchmark(benchmark, params)
                     if not result or not result.success:
                         entries[test_id] = "fail"
                         failed += 1
-                        logger.error(
-                            f"  [FAIL] Failed to run for params: {params}"
-                        )
+                        logger.error(f"  [FAIL] Failed to run for params: {params}")
                         continue
 
                     comparison = comparator.compare(result.return_value, expected_value)
@@ -782,7 +789,9 @@ class SnapshotCLI:
         benchmarks = discovery.discover_all()
 
         if args.filter:
-            benchmarks = [b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")]
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
 
         logger.info(f"Found {len(benchmarks)} benchmarks in {benchmark_dir}:")
 

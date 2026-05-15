@@ -1,7 +1,9 @@
 """Integration tests for end-to-end workflows."""
+
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import shutil
 import tempfile
@@ -31,11 +33,7 @@ def workspace():
     snapshot_dir = workspace_path / ".snapshots"
     snapshot_dir.mkdir()
 
-    yield {
-        'root': workspace_path,
-        'benchmarks': benchmark_dir,
-        'snapshots': snapshot_dir
-    }
+    yield {"root": workspace_path, "benchmarks": benchmark_dir, "snapshots": snapshot_dir}
 
     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -46,7 +44,7 @@ class TestCaptureWorkflow:
     def test_capture_simple_function_benchmark(self, workspace):
         """Test capturing a simple function benchmark."""
         # Create benchmark file
-        bench_file = workspace['benchmarks'] / "simple.py"
+        bench_file = workspace["benchmarks"] / "simple.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -55,30 +53,30 @@ def time_simple():
 """)
 
         # Discover benchmarks
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
         assert len(benchmarks) == 1
 
         # Run benchmark
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
         assert result.success is True
         assert isinstance(result.return_value, np.ndarray)
 
         # Store snapshot
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         snapshot_path = storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
         assert snapshot_path.exists()
 
     def test_capture_parameterized_benchmark(self, workspace):
         """Test capturing parameterized benchmarks."""
-        bench_file = workspace['benchmarks'] / "parameterized.py"
+        bench_file = workspace["benchmarks"] / "parameterized.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -94,7 +92,7 @@ class ParameterizedBench:
         return self.data * self.multiplier
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
         assert len(benchmarks) == 1
 
@@ -103,8 +101,8 @@ class ParameterizedBench:
         assert len(param_combinations) == 4  # 2 * 2
 
         # Run and capture all combinations
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         for params in param_combinations:
             result = runner.run_benchmark(benchmarks[0], params)
@@ -115,7 +113,7 @@ class ParameterizedBench:
                 module_path=benchmarks[0].module_path,
                 parameters=params,
                 param_names=benchmarks[0].param_names,
-                return_value=result.return_value
+                return_value=result.return_value,
             )
 
         # Verify all snapshots were created
@@ -124,7 +122,7 @@ class ParameterizedBench:
 
     def test_capture_multiple_benchmarks(self, workspace):
         """Test capturing multiple benchmarks in one file."""
-        bench_file = workspace['benchmarks'] / "multiple.py"
+        bench_file = workspace["benchmarks"] / "multiple.py"
         bench_file.write_text("""
 def time_bench1():
     return 42
@@ -136,12 +134,12 @@ def time_bench3():
     return {'key': 'value'}
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
         assert len(benchmarks) == 3
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         # Capture all benchmarks
         for benchmark in benchmarks:
@@ -153,7 +151,7 @@ def time_bench3():
                 module_path=benchmark.module_path,
                 parameters=(),
                 param_names=None,
-                return_value=result.return_value
+                return_value=result.return_value,
             )
 
         # Verify
@@ -166,7 +164,7 @@ class TestVerifyWorkflow:
 
     def test_verify_unchanged_benchmark(self, workspace):
         """Test verifying a benchmark that hasn't changed."""
-        bench_file = workspace['benchmarks'] / "verify.py"
+        bench_file = workspace["benchmarks"] / "verify.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -175,27 +173,25 @@ def time_verify():
 """)
 
         # Initial capture
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         # Re-run and verify
         result2 = runner.run_benchmark(benchmarks[0])
         loaded_value, _ = storage.load_snapshot(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
         comparator = Comparator()
@@ -204,26 +200,26 @@ def time_verify():
 
     def test_detect_changed_benchmark(self, workspace):
         """Test detecting when a benchmark output changes."""
-        bench_file = workspace['benchmarks'] / "changed.py"
+        bench_file = workspace["benchmarks"] / "changed.py"
         bench_file.write_text("""
 def time_changed():
     return 42
 """)
 
         # Initial capture
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         # Modify benchmark
@@ -233,17 +229,15 @@ def time_changed():
 """)
 
         # Re-discover and run
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Need to reload module
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result2 = runner.run_benchmark(benchmarks[0])
 
         loaded_value, _ = storage.load_snapshot(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
         comparator = Comparator()
@@ -253,7 +247,7 @@ def time_changed():
 
     def test_verify_with_tolerance(self, workspace):
         """Test verification with numerical tolerance."""
-        bench_file = workspace['benchmarks'] / "tolerance.py"
+        bench_file = workspace["benchmarks"] / "tolerance.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -263,28 +257,26 @@ def time_tolerance():
 """)
 
         # Initial capture
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         # Create slightly different value
         new_value = np.array([1.0000001, 2.0000001, 3.0000001])
 
         loaded_value, _ = storage.load_snapshot(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
         # Should pass with default tolerance
@@ -299,7 +291,7 @@ class TestComplexScenarios:
 
     def test_mixed_benchmark_types(self, workspace):
         """Test file with both functions and classes."""
-        bench_file = workspace['benchmarks'] / "mixed.py"
+        bench_file = workspace["benchmarks"] / "mixed.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -317,16 +309,16 @@ class BenchmarkClass:
         return np.sum(self.data)
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Should find both function and methods
         assert len(benchmarks) == 2
         types = {b.benchmark_type for b in benchmarks}
-        assert types == {'function', 'method'}
+        assert types == {"function", "method"}
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         # Capture all
         for benchmark in benchmarks:
@@ -340,7 +332,7 @@ class BenchmarkClass:
                             module_path=benchmark.module_path,
                             parameters=params,
                             param_names=benchmark.param_names,
-                            return_value=result.return_value
+                            return_value=result.return_value,
                         )
             else:
                 result = runner.run_benchmark(benchmark)
@@ -350,13 +342,13 @@ class BenchmarkClass:
                         module_path=benchmark.module_path,
                         parameters=(),
                         param_names=None,
-                        return_value=result.return_value
+                        return_value=result.return_value,
                     )
 
     def test_nested_module_structure(self, workspace):
         """Test benchmarks in nested directories."""
         # Create nested structure
-        subdir = workspace['benchmarks'] / "submodule"
+        subdir = workspace["benchmarks"] / "submodule"
         subdir.mkdir()
 
         (subdir / "nested_bench.py").write_text("""
@@ -364,48 +356,46 @@ def time_nested():
     return "nested_result"
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         assert len(benchmarks) == 1
         assert "submodule" in benchmarks[0].module_path
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
         assert result.success is True
 
     def test_failed_benchmark_handling(self, workspace):
         """Test handling of benchmarks that fail."""
-        bench_file = workspace['benchmarks'] / "failing.py"
+        bench_file = workspace["benchmarks"] / "failing.py"
         bench_file.write_text("""
 def time_failing():
     raise ValueError("This benchmark fails")
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
         assert result.success is False
         assert result.error is not None
 
         # Store failed capture
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_failed_capture(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            failure_reason=result.error
+            failure_reason=result.error,
         )
 
         # Verify it's marked as failed
         assert storage.is_failed_capture(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
 
@@ -414,7 +404,7 @@ class TestDataTypeRoundTrip:
 
     def test_numpy_array_round_trip(self, workspace):
         """Test numpy array survives capture and load."""
-        bench_file = workspace['benchmarks'] / "numpy_test.py"
+        bench_file = workspace["benchmarks"] / "numpy_test.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -422,25 +412,23 @@ def time_numpy():
     return np.array([[1, 2, 3], [4, 5, 6]])
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         loaded, _ = storage.load_snapshot(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
         assert isinstance(loaded, np.ndarray)
@@ -450,7 +438,7 @@ def time_numpy():
 
     def test_complex_dict_round_trip(self, workspace):
         """Test complex nested structure round trip."""
-        bench_file = workspace['benchmarks'] / "dict_test.py"
+        bench_file = workspace["benchmarks"] / "dict_test.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -463,25 +451,23 @@ def time_complex():
     }
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
         result = runner.run_benchmark(benchmarks[0])
 
-        storage = SnapshotManager(workspace['snapshots'])
+        storage = SnapshotManager(workspace["snapshots"])
         storage.store_snapshot(
             benchmark_name=benchmarks[0].name,
             module_path=benchmarks[0].module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         loaded, _ = storage.load_snapshot(
-            benchmark_name=benchmarks[0].name,
-            module_path=benchmarks[0].module_path,
-            parameters=()
+            benchmark_name=benchmarks[0].name, module_path=benchmarks[0].module_path, parameters=()
         )
 
         comparator = Comparator()
@@ -494,7 +480,7 @@ class TestParameterCombinations:
 
     def test_multiple_parameter_dimensions(self, workspace):
         """Test benchmarks with multiple parameter dimensions."""
-        bench_file = workspace['benchmarks'] / "multi_param.py"
+        bench_file = workspace["benchmarks"] / "multi_param.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -511,15 +497,15 @@ class MultiParam:
         return f"{self.letter}{self.num}_{self.flag}"
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         param_combinations = discovery.generate_parameter_combinations(benchmarks[0])
         # 3 * 2 * 2 = 12 combinations
         assert len(param_combinations) == 12
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         # Capture all combinations
         for params in param_combinations:
@@ -531,7 +517,7 @@ class MultiParam:
                 module_path=benchmarks[0].module_path,
                 parameters=params,
                 param_names=benchmarks[0].param_names,
-                return_value=result.return_value
+                return_value=result.return_value,
             )
 
         # Verify all were stored
@@ -540,7 +526,7 @@ class MultiParam:
 
     def test_parameter_uniqueness(self, workspace):
         """Test that different parameters create unique snapshots."""
-        bench_file = workspace['benchmarks'] / "unique_params.py"
+        bench_file = workspace["benchmarks"] / "unique_params.py"
         bench_file.write_text("""
 class UniqueParams:
     params = ([1, 2],)
@@ -553,11 +539,11 @@ class UniqueParams:
         return self.x * 10
 """)
 
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         param_combinations = discovery.generate_parameter_combinations(benchmarks[0])
 
@@ -571,7 +557,7 @@ class UniqueParams:
                 module_path=benchmarks[0].module_path,
                 parameters=params,
                 param_names=benchmarks[0].param_names,
-                return_value=result.return_value
+                return_value=result.return_value,
             )
 
         # Verify each parameter has unique result
@@ -579,7 +565,7 @@ class UniqueParams:
             loaded, _ = storage.load_snapshot(
                 benchmark_name=benchmarks[0].name,
                 module_path=benchmarks[0].module_path,
-                parameters=params
+                parameters=params,
             )
             assert loaded == expected_value
 
@@ -590,7 +576,7 @@ class TestEndToEnd:
     def test_full_capture_verify_cycle(self, workspace):
         """Test a complete capture and verify cycle."""
         # Create benchmarks
-        bench_file = workspace['benchmarks'] / "full_test.py"
+        bench_file = workspace["benchmarks"] / "full_test.py"
         bench_file.write_text("""
 import numpy as np
 
@@ -609,13 +595,13 @@ class ParamBench:
 """)
 
         # Phase 1: Discovery
-        discovery = BenchmarkDiscovery(workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(workspace["benchmarks"])
         benchmarks = discovery.discover_all()
         assert len(benchmarks) == 2
 
         # Phase 2: Capture
-        runner = BenchmarkRunner(workspace['benchmarks'])
-        storage = SnapshotManager(workspace['snapshots'])
+        runner = BenchmarkRunner(workspace["benchmarks"])
+        storage = SnapshotManager(workspace["snapshots"])
 
         captured_count = 0
         for benchmark in benchmarks:
@@ -629,7 +615,7 @@ class ParamBench:
                             module_path=benchmark.module_path,
                             parameters=params,
                             param_names=benchmark.param_names,
-                            return_value=result.return_value
+                            return_value=result.return_value,
                         )
                         captured_count += 1
             else:
@@ -640,7 +626,7 @@ class ParamBench:
                         module_path=benchmark.module_path,
                         parameters=(),
                         param_names=None,
-                        return_value=result.return_value
+                        return_value=result.return_value,
                     )
                     captured_count += 1
 
@@ -659,7 +645,7 @@ class ParamBench:
                         loaded_value, _ = storage.load_snapshot(
                             benchmark_name=benchmark.name,
                             module_path=benchmark.module_path,
-                            parameters=params
+                            parameters=params,
                         )
                         comparison = comparator.compare(result.return_value, loaded_value)
                         assert comparison.match is True
@@ -670,7 +656,7 @@ class ParamBench:
                     loaded_value, _ = storage.load_snapshot(
                         benchmark_name=benchmark.name,
                         module_path=benchmark.module_path,
-                        parameters=()
+                        parameters=(),
                     )
                     comparison = comparator.compare(result.return_value, loaded_value)
                     assert comparison.match is True
@@ -693,17 +679,14 @@ class TestShapelyRepo:
         snapshot_dir = Path(temp_dir) / ".snapshots"
         snapshot_dir.mkdir()
 
-        yield {
-            'benchmarks': benchmark_dir,
-            'snapshots': snapshot_dir
-        }
+        yield {"benchmarks": benchmark_dir, "snapshots": snapshot_dir}
 
         # Cleanup
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_shapely_benchmark_discovery(self, shapely_workspace):
         """Test that we can discover shapely benchmarks."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Shapely has multiple benchmark classes
@@ -713,7 +696,7 @@ class TestShapelyRepo:
         benchmark_names = {b.name for b in benchmarks}
 
         # These are classes from the shapely benchmarks
-        expected_classes = {'PointPolygonTimeSuite', 'IOSuite', 'ConstructorsSuite'}
+        expected_classes = {"PointPolygonTimeSuite", "IOSuite", "ConstructorsSuite"}
         found_classes = {b.class_name for b in benchmarks if b.class_name}
 
         # At least some of these should be found
@@ -721,22 +704,22 @@ class TestShapelyRepo:
 
     def test_shapely_capture_and_verify_subset(self, shapely_workspace):
         """Test capturing and verifying a subset of shapely benchmarks."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Filter to a small, fast benchmark for testing
         # ConstructorsSuite.time_point is a simple microbenchmark
         test_benchmark = None
         for b in benchmarks:
-            if b.class_name == 'ConstructorsSuite' and b.name == 'time_point':
+            if b.class_name == "ConstructorsSuite" and b.name == "time_point":
                 test_benchmark = b
                 break
 
         if test_benchmark is None:
             pytest.skip("Could not find ConstructorsSuite.time_point benchmark")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
-        storage = SnapshotManager(shapely_workspace['snapshots'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
+        storage = SnapshotManager(shapely_workspace["snapshots"])
 
         # Capture the benchmark
         result = runner.run_benchmark(test_benchmark)
@@ -751,7 +734,7 @@ class TestShapelyRepo:
             module_path=test_benchmark.module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         # Verify the snapshot
@@ -761,7 +744,7 @@ class TestShapelyRepo:
         loaded_value, _ = storage.load_snapshot(
             benchmark_name=test_benchmark.name,
             module_path=test_benchmark.module_path,
-            parameters=()
+            parameters=(),
         )
 
         comparator = Comparator()
@@ -770,21 +753,21 @@ class TestShapelyRepo:
 
     def test_shapely_determinism_multiple_verifies(self, shapely_workspace):
         """Test that verification is deterministic - running verify twice should always pass."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Find a simple benchmark to test
         test_benchmark = None
         for b in benchmarks:
-            if b.class_name == 'ConstructorsSuite' and b.name == 'time_point':
+            if b.class_name == "ConstructorsSuite" and b.name == "time_point":
                 test_benchmark = b
                 break
 
         if test_benchmark is None:
             pytest.skip("Could not find ConstructorsSuite.time_point benchmark")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
-        storage = SnapshotManager(shapely_workspace['snapshots'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
+        storage = SnapshotManager(shapely_workspace["snapshots"])
         comparator = Comparator()
 
         # Initial capture
@@ -796,7 +779,7 @@ class TestShapelyRepo:
             module_path=test_benchmark.module_path,
             parameters=(),
             param_names=None,
-            return_value=capture_result.return_value
+            return_value=capture_result.return_value,
         )
 
         # First verification
@@ -806,7 +789,7 @@ class TestShapelyRepo:
         loaded_value1, _ = storage.load_snapshot(
             benchmark_name=test_benchmark.name,
             module_path=test_benchmark.module_path,
-            parameters=()
+            parameters=(),
         )
 
         comparison1 = comparator.compare(verify1_result.return_value, loaded_value1)
@@ -819,7 +802,7 @@ class TestShapelyRepo:
         loaded_value2, _ = storage.load_snapshot(
             benchmark_name=test_benchmark.name,
             module_path=test_benchmark.module_path,
-            parameters=()
+            parameters=(),
         )
 
         comparison2 = comparator.compare(verify2_result.return_value, loaded_value2)
@@ -832,7 +815,7 @@ class TestShapelyRepo:
         loaded_value3, _ = storage.load_snapshot(
             benchmark_name=test_benchmark.name,
             module_path=test_benchmark.module_path,
-            parameters=()
+            parameters=(),
         )
 
         comparison3 = comparator.compare(verify3_result.return_value, loaded_value3)
@@ -840,21 +823,21 @@ class TestShapelyRepo:
 
     def test_shapely_with_setup_method(self, shapely_workspace):
         """Test a shapely benchmark that has a setup method - uses time_distance which returns numpy arrays."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Find PointPolygonTimeSuite.time_distance which has setup and returns numpy array
         test_benchmark = None
         for b in benchmarks:
-            if b.class_name == 'PointPolygonTimeSuite' and b.name == 'time_distance':
+            if b.class_name == "PointPolygonTimeSuite" and b.name == "time_distance":
                 test_benchmark = b
                 break
 
         if test_benchmark is None:
             pytest.skip("Could not find PointPolygonTimeSuite.time_distance benchmark")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
-        storage = SnapshotManager(shapely_workspace['snapshots'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
+        storage = SnapshotManager(shapely_workspace["snapshots"])
 
         # Run the benchmark (it should handle setup internally)
         result = runner.run_benchmark(test_benchmark)
@@ -869,7 +852,7 @@ class TestShapelyRepo:
             module_path=test_benchmark.module_path,
             parameters=(),
             param_names=None,
-            return_value=result.return_value
+            return_value=result.return_value,
         )
 
         # Verify determinism - important for benchmarks with random data in setup
@@ -879,7 +862,7 @@ class TestShapelyRepo:
         loaded_value, _ = storage.load_snapshot(
             benchmark_name=test_benchmark.name,
             module_path=test_benchmark.module_path,
-            parameters=()
+            parameters=(),
         )
 
         comparator = Comparator()
@@ -888,20 +871,22 @@ class TestShapelyRepo:
 
     def test_shapely_full_capture_and_verify_cycle(self, shapely_workspace):
         """Full integration test: capture shapely benchmarks and verify determinism."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Filter to fast benchmarks
         fast_benchmarks = [
-            b for b in benchmarks
-            if b.class_name == 'ConstructorsSuite' and b.name in ['time_point', 'time_linestring_from_numpy']
+            b
+            for b in benchmarks
+            if b.class_name == "ConstructorsSuite"
+            and b.name in ["time_point", "time_linestring_from_numpy"]
         ]
 
         if len(fast_benchmarks) == 0:
             pytest.skip("Could not find ConstructorsSuite benchmarks")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
-        storage = SnapshotManager(shapely_workspace['snapshots'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
+        storage = SnapshotManager(shapely_workspace["snapshots"])
         comparator = Comparator()
 
         # Phase 1: Capture
@@ -914,7 +899,7 @@ class TestShapelyRepo:
                     module_path=benchmark.module_path,
                     parameters=(),
                     param_names=None,
-                    return_value=result.return_value
+                    return_value=result.return_value,
                 )
                 captured_benchmarks.append(benchmark)
 
@@ -925,37 +910,41 @@ class TestShapelyRepo:
             all_passed = True
             for benchmark in captured_benchmarks:
                 result = runner.run_benchmark(benchmark)
-                assert result.success, f"Benchmark {benchmark.name} failed on verify round {verify_round + 1}"
+                assert result.success, (
+                    f"Benchmark {benchmark.name} failed on verify round {verify_round + 1}"
+                )
 
                 loaded_value, _ = storage.load_snapshot(
-                    benchmark_name=benchmark.name,
-                    module_path=benchmark.module_path,
-                    parameters=()
+                    benchmark_name=benchmark.name, module_path=benchmark.module_path, parameters=()
                 )
 
                 comparison = comparator.compare(result.return_value, loaded_value)
                 if not comparison.match:
                     all_passed = False
-                    logger.info(f"Round {verify_round + 1} failed for {benchmark.name}: {comparison.error_message}")
+                    logger.info(
+                        f"Round {verify_round + 1} failed for {benchmark.name}: {comparison.error_message}"
+                    )
 
-            assert all_passed, f"Verification round {verify_round + 1} should pass (determinism check)"
+            assert all_passed, (
+                f"Verification round {verify_round + 1} should pass (determinism check)"
+            )
 
     def test_shapely_with_random_data_determinism(self, shapely_workspace):
         """Test that benchmarks using np.random produce deterministic results with seed management."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         # Find PointPolygonTimeSuite.time_distance which uses random data
         test_benchmark = None
         for b in benchmarks:
-            if b.class_name == 'PointPolygonTimeSuite' and b.name == 'time_distance':
+            if b.class_name == "PointPolygonTimeSuite" and b.name == "time_distance":
                 test_benchmark = b
                 break
 
         if test_benchmark is None:
             pytest.skip("Could not find PointPolygonTimeSuite.time_distance benchmark")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
         comparator = Comparator()
 
         # Run 3 times - should be identical due to seed reset
@@ -980,13 +969,13 @@ class TestShapelyRepo:
 
     def test_shapely_multiple_benchmarks_verify(self, shapely_workspace):
         """Test running multiple shapely benchmarks and verifying all."""
-        discovery = BenchmarkDiscovery(shapely_workspace['benchmarks'])
+        discovery = BenchmarkDiscovery(shapely_workspace["benchmarks"])
         benchmarks = discovery.discover_all()
 
         target_benchmarks = [
-            ('ConstructorsSuite', 'time_point'),
-            ('ConstructorsSuite', 'time_linestring_from_numpy'),
-            ('ConstructorsSuite', 'time_linearring_from_numpy'),
+            ("ConstructorsSuite", "time_point"),
+            ("ConstructorsSuite", "time_linestring_from_numpy"),
+            ("ConstructorsSuite", "time_linearring_from_numpy"),
         ]
 
         selected_benchmarks = []
@@ -999,8 +988,8 @@ class TestShapelyRepo:
         if len(selected_benchmarks) < 2:
             pytest.skip("Could not find enough benchmarks")
 
-        runner = BenchmarkRunner(shapely_workspace['benchmarks'])
-        storage = SnapshotManager(shapely_workspace['snapshots'])
+        runner = BenchmarkRunner(shapely_workspace["benchmarks"])
+        storage = SnapshotManager(shapely_workspace["snapshots"])
         comparator = Comparator()
 
         # Capture all
@@ -1014,7 +1003,7 @@ class TestShapelyRepo:
                     module_path=benchmark.module_path,
                     parameters=(),
                     param_names=None,
-                    return_value=result.return_value
+                    return_value=result.return_value,
                 )
 
         assert len(capture_results) >= 2, "Should capture at least 2 benchmarks"
@@ -1027,9 +1016,7 @@ class TestShapelyRepo:
                 assert result.success is True
 
                 loaded_value, _ = storage.load_snapshot(
-                    benchmark_name=benchmark.name,
-                    module_path=benchmark.module_path,
-                    parameters=()
+                    benchmark_name=benchmark.name, module_path=benchmark.module_path, parameters=()
                 )
 
                 comparison = comparator.compare(result.return_value, loaded_value)

@@ -1,7 +1,9 @@
 """Comprehensive tests for Comparator."""
+
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import numpy as np
 import pytest
@@ -112,9 +114,9 @@ class TestNumpyArrayComparison:
 
     def test_structured_arrays(self, comparator):
         """Test structured numpy arrays."""
-        dt = np.dtype([('name', 'U10'), ('age', 'i4')])
-        arr1 = np.array([('Alice', 25), ('Bob', 30)], dtype=dt)
-        arr2 = np.array([('Alice', 25), ('Bob', 30)], dtype=dt)
+        dt = np.dtype([("name", "U10"), ("age", "i4")])
+        arr1 = np.array([("Alice", 25), ("Bob", 30)], dtype=dt)
+        arr2 = np.array([("Alice", 25), ("Bob", 30)], dtype=dt)
 
         result = comparator.compare(arr1, arr2)
         # Pure Python implementation can compare structured arrays element-wise
@@ -246,40 +248,40 @@ class TestDictionaryComparison:
 
     def test_identical_dicts(self, comparator):
         """Test identical dictionaries."""
-        dict1 = {'a': 1, 'b': 2, 'c': 3}
-        dict2 = {'a': 1, 'b': 2, 'c': 3}
+        dict1 = {"a": 1, "b": 2, "c": 3}
+        dict2 = {"a": 1, "b": 2, "c": 3}
 
         result = comparator.compare(dict1, dict2)
         assert result.match is True
 
     def test_different_values(self, comparator):
         """Test dicts with different values."""
-        dict1 = {'a': 1, 'b': 2}
-        dict2 = {'a': 1, 'b': 3}
+        dict1 = {"a": 1, "b": 2}
+        dict2 = {"a": 1, "b": 3}
 
         result = comparator.compare(dict1, dict2)
         assert result.match is False
 
     def test_different_keys(self, comparator):
         """Test dicts with different keys."""
-        dict1 = {'a': 1, 'b': 2}
-        dict2 = {'a': 1, 'c': 2}
+        dict1 = {"a": 1, "b": 2}
+        dict2 = {"a": 1, "c": 2}
 
         result = comparator.compare(dict1, dict2)
         assert result.match is False
 
     def test_nested_dicts(self, comparator):
         """Test nested dictionaries."""
-        dict1 = {'a': {'b': {'c': 1}}}
-        dict2 = {'a': {'b': {'c': 1}}}
+        dict1 = {"a": {"b": {"c": 1}}}
+        dict2 = {"a": {"b": {"c": 1}}}
 
         result = comparator.compare(dict1, dict2)
         assert result.match is True
 
     def test_dicts_with_numpy_values(self, comparator):
         """Test dicts containing numpy arrays."""
-        dict1 = {'arr': np.array([1, 2, 3]), 'num': 42}
-        dict2 = {'arr': np.array([1, 2, 3]), 'num': 42}
+        dict1 = {"arr": np.array([1, 2, 3]), "num": 42}
+        dict2 = {"arr": np.array([1, 2, 3]), "num": 42}
 
         result = comparator.compare(dict1, dict2)
         assert result.match is True
@@ -291,16 +293,8 @@ class TestDictionaryComparison:
 
     def test_complex_nested_structures(self, comparator):
         """Test complex nested dict/list structures."""
-        struct1 = {
-            'list': [1, 2, [3, 4]],
-            'dict': {'a': {'b': 'c'}},
-            'array': np.array([5, 6, 7])
-        }
-        struct2 = {
-            'list': [1, 2, [3, 4]],
-            'dict': {'a': {'b': 'c'}},
-            'array': np.array([5, 6, 7])
-        }
+        struct1 = {"list": [1, 2, [3, 4]], "dict": {"a": {"b": "c"}}, "array": np.array([5, 6, 7])}
+        struct2 = {"list": [1, 2, [3, 4]], "dict": {"a": {"b": "c"}}, "array": np.array([5, 6, 7])}
 
         result = comparator.compare(struct1, struct2)
         assert result.match is True
@@ -311,6 +305,7 @@ class TestClassInstanceComparison:
 
     def test_same_class_instances_with_eq(self, comparator):
         """Test class instances with __eq__ implemented."""
+
         class Point:
             def __init__(self, x, y):
                 self.x = x
@@ -327,6 +322,7 @@ class TestClassInstanceComparison:
 
     def test_different_class_instances(self, comparator):
         """Test different class instances."""
+
         class Point:
             def __init__(self, x, y):
                 self.x = x
@@ -343,6 +339,7 @@ class TestClassInstanceComparison:
 
     def test_class_instances_with_dict_comparison(self, comparator):
         """Test comparing class instance __dict__ attributes."""
+
         class TestClass:
             def __init__(self, value):
                 self.value = value
@@ -357,6 +354,7 @@ class TestClassInstanceComparison:
 
     def test_serialized_class_instances(self, comparator):
         """Test comparison of actual class instance vs serialized representation."""
+
         # Create a real class instance
         class TestClass:
             def __init__(self, value):
@@ -366,10 +364,10 @@ class TestClassInstanceComparison:
 
         # Serialized representation (as stored by SnapshotManager)
         serialized = {
-            '__class_instance__': True,
-            '__class_name__': 'TestClass',
-            '__module__': '__main__',
-            '__dict__': {'value': 42}
+            "__class_instance__": True,
+            "__class_name__": "TestClass",
+            "__module__": "__main__",
+            "__dict__": {"value": 42},
         }
 
         result = comparator.compare(actual_instance, serialized)
@@ -381,8 +379,8 @@ class TestSpecialCases:
 
     def test_generator_comparison(self, comparator):
         """Test comparison of generator markers."""
-        gen1 = {'__generator__': True}
-        gen2 = {'__generator__': True}
+        gen1 = {"__generator__": True}
+        gen2 = {"__generator__": True}
 
         result = comparator.compare(gen1, gen2)
         # Generators should be skipped or match trivially
@@ -390,8 +388,8 @@ class TestSpecialCases:
 
     def test_callable_comparison(self, comparator):
         """Test comparison of callable markers."""
-        callable1 = {'__callable__': True}
-        callable2 = {'__callable__': True}
+        callable1 = {"__callable__": True}
+        callable2 = {"__callable__": True}
 
         result = comparator.compare(callable1, callable2)
         assert result.match is True
@@ -470,10 +468,11 @@ class TestEdgeCases:
 
     def test_deeply_nested_structures(self, comparator):
         """Test very deeply nested structures."""
+
         def create_nested(depth):
             if depth == 0:
                 return 42
-            return {'nested': create_nested(depth - 1)}
+            return {"nested": create_nested(depth - 1)}
 
         struct1 = create_nested(10)
         struct2 = create_nested(10)
@@ -503,10 +502,10 @@ class TestEdgeCases:
 
     def test_bytes_comparison(self, comparator):
         """Test bytes comparison."""
-        result = comparator.compare(b'hello', b'hello')
+        result = comparator.compare(b"hello", b"hello")
         assert result.match is True
 
-        result = comparator.compare(b'hello', b'world')
+        result = comparator.compare(b"hello", b"world")
         assert result.match is False
 
     def test_set_comparison(self, comparator):
