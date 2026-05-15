@@ -114,7 +114,7 @@ from snapshot_tool import Comparator, ComparisonConfig
 config = ComparisonConfig(
     rtol=1e-5,
     atol=1e-8,
-    equal_nan=False,
+    equal_nan=True,
     strict_types=True,
     strict_shapes=True,
 )
