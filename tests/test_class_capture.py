@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import logging
+
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 """
 Test script to verify class instance capture and failed capture handling.
 """
@@ -17,12 +18,18 @@ def test_class_instance_capture():
 
     # Initialize components
     benchmark_dir = Path(__file__).parent
-    runner = BenchmarkRunner(benchmark_dir)
+    runner = BenchmarkRunner(benchmark_dir, timeout=30)
     storage = SnapshotManager(benchmark_dir / ".snapshots")
 
-    # Discover benchmarks
+    # Discover benchmarks. benchmark_dir is the whole tests/ tree, which also
+    # contains the vendored real-repo suites under tests/test_repos/ (~1500
+    # benchmarks). This test only exercises class-instance capture, so scope it
+    # to the test_class_instance fixture module — otherwise the loop below would
+    # execute every vendored benchmark and run for hours.
     discovery = BenchmarkDiscovery(benchmark_dir)
-    benchmarks = discovery.discover_all()
+    benchmarks = [
+        b for b in discovery.discover_all() if b.module_path == "test_class_instance"
+    ]
 
     logger.info(f"Found {len(benchmarks)} benchmarks")
 
