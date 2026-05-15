@@ -27,9 +27,7 @@ def test_class_instance_capture():
     # to the test_class_instance fixture module — otherwise the loop below would
     # execute every vendored benchmark and run for hours.
     discovery = BenchmarkDiscovery(benchmark_dir)
-    benchmarks = [
-        b for b in discovery.discover_all() if b.module_path == "test_class_instance"
-    ]
+    benchmarks = [b for b in discovery.discover_all() if b.module_path == "test_class_instance"]
 
     logger.info(f"Found {len(benchmarks)} benchmarks")
 
