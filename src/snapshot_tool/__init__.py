@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Configure logging for the package
 def configure_logging(level=logging.INFO):

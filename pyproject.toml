@@ -1,6 +1,6 @@
 [project]
 name = "snapshot-tool"
-version = "0.1.0"
+version = "0.2.0"
 description = "Snapshot testing tool for ASV benchmarks - captures and compares function outputs to verify correctness after optimizations"
 readme = "README.md"
 authors = [
