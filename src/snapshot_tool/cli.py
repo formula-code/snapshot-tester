@@ -213,7 +213,14 @@ class SnapshotCLI:
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Capture with all parameter combinations
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
 
                 for params in param_combinations:
                     result = runner.run_benchmark(benchmark, params)
@@ -357,7 +364,14 @@ class SnapshotCLI:
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Verify with all parameter combinations
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
 
                 for params in param_combinations:
                     # Load snapshot first to check if it exists
@@ -672,7 +686,14 @@ class SnapshotCLI:
             logger.info(f"Baselining: {benchmark.module_path}.{benchmark.name}")
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
                 for params in param_combinations:
                     test_id = storage.get_test_id(
                         module_path=benchmark.module_path,
