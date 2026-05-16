@@ -51,7 +51,11 @@ jobs:
       env:
         UV_PYTHON: ${{ env.pythonLocation }}/bin/python
         SNAPSHOT_TOOL_FILTER: ${{ matrix.shard.filter }}
-        SNAPSHOT_TOOL_TIMEOUT: "10"
+        # Aggressive per-benchmark cap: the roundtrip runs capture+baseline+verify
+        # (3 passes) over large shards. Slow benchmarks become failed-captures
+        # (skipped), which the regression gate tolerates, instead of blowing the
+        # job time budget. See tests/test_cli_roundtrip.py.
+        SNAPSHOT_TOOL_TIMEOUT: "5"
       run: |
         uv run pytest -v tests/test_cli_roundtrip.py::TestAstropyRoundtrip -x
       timeout-minutes: 90
