@@ -56,6 +56,10 @@ jobs:
         # (skipped), which the regression gate tolerates, instead of blowing the
         # job time budget. See tests/test_cli_roundtrip.py.
         SNAPSHOT_TOOL_TIMEOUT: "5"
+        # Run benchmarks across worker processes (min(cpu_count, 8)); produces
+        # byte-identical snapshots to serial. The main lever for fitting these
+        # large shards in the time budget.
+        SNAPSHOT_TOOL_PARALLEL: "1"
       run: |
         uv run pytest -v tests/test_cli_roundtrip.py::TestAstropyRoundtrip -x
       timeout-minutes: 90

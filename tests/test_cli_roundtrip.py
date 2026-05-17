@@ -59,14 +59,22 @@ def _get_cli_timeout() -> Optional[float]:
         return None
 
 
+def _parallel_enabled() -> bool:
+    return os.getenv("SNAPSHOT_TOOL_PARALLEL", "").strip() not in ("", "0", "false", "False")
+
+
 def _maybe_filter_timeout(args: list) -> list:
-    """Append the shared --filter / --timeout knobs (env-driven, CI shards)."""
+    """Append the shared --filter / --timeout / --parallel knobs (env-driven,
+    used by the sharded CI jobs)."""
     filter_pattern = _get_cli_filter()
     benchmark_timeout = _get_cli_timeout()
     if filter_pattern:
         args.extend(["--filter", filter_pattern])
     if benchmark_timeout is not None:
         args.extend(["--timeout", str(benchmark_timeout)])
+    # `list` has no --parallel; only add it for capture/baseline/verify.
+    if _parallel_enabled() and len(args) > 1 and args[1] in ("capture", "baseline", "verify"):
+        args.append("--parallel")
     return args
 
 

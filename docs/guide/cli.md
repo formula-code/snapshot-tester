@@ -34,6 +34,25 @@ These apply to every subcommand:
 | `--verbose`, `-v` | Verbose logging (prints comparison details and full tracebacks on errors) |
 | `--quiet`, `-q` | Suppress per-benchmark `[PASS]` / `[SKIP]` lines |
 
+## Parallel execution
+
+`capture`, `verify`, and `baseline` accept opt-in parallelism:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--parallel` | Run benchmarks across worker **processes** instead of serially | off (serial) |
+| `--workers N` | Worker count when `--parallel` is set | `min(cpu_count, 8)` |
+
+Default behaviour is unchanged — without `--parallel` everything runs serially in-process. With `--parallel`, `(benchmark, parameters)` tasks are distributed to a process pool (true parallelism + per-process `sys.settrace`/RNG/import isolation). Workers only execute, trace, and serialize the captured value; the **main process performs every SQLite write** (SQLite is single-writer) and all comparison. Parallel runs are verified to produce **byte-identical** snapshots to serial (same content-addressed sha256 blob hashes), so determinism is preserved. A task whose parameters can't be pickled across the process boundary transparently falls back to in-process execution.
+
+```bash
+# Capture a large suite using all cores (capped at 8)
+snapshot-tool capture path/to/benchmarks --parallel
+
+# Pin the worker count
+snapshot-tool verify path/to/benchmarks --parallel --workers 4
+```
+
 ## Subcommands
 
 ---
