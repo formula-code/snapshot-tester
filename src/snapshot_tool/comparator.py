@@ -30,6 +30,18 @@ def _is_numpy_array(obj: Any) -> bool:
     return obj_type.__module__ == "numpy" and obj_type.__name__ == "ndarray"
 
 
+def _is_pandas_dataframe(obj: Any) -> bool:
+    """Detect a pandas DataFrame without importing pandas (it's optional)."""
+    t = type(obj)
+    return t.__name__ == "DataFrame" and t.__module__.split(".")[0] == "pandas"
+
+
+def _is_pandas_series(obj: Any) -> bool:
+    """Detect a pandas Series without importing pandas (it's optional)."""
+    t = type(obj)
+    return t.__name__ == "Series" and t.__module__.split(".")[0] == "pandas"
+
+
 def _is_numpy_scalar(obj: Any) -> bool:
     """Check if object is a numpy scalar without requiring numpy import."""
     if HAS_NUMPY and np is not None:
@@ -147,6 +159,7 @@ class Comparator:
             strategies = [
                 self._compare_numpy_arrays,
                 self._compare_scalars,
+                self._compare_pandas,
                 self._compare_objects,
                 self._compare_sequences,
                 self._compare_dicts,
@@ -340,6 +353,39 @@ class Comparator:
 
         except Exception as e:
             return ComparisonResult(match=False, error_message=f"Scalar comparison failed: {e}")
+
+    def _compare_pandas(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
+        """Compare pandas DataFrame / Series with tolerance.
+
+        pandas objects reach here before _compare_objects, which would do
+        ``bool(actual == expected)`` and raise "truth value is ambiguous".
+        We reduce to the underlying ndarray and reuse the numpy element-wise
+        tolerance path so deterministic benchmarks (RNG is patched) actually
+        pass instead of being spurious fail-to-fail.
+        """
+        a_df, a_sr = _is_pandas_dataframe(actual), _is_pandas_series(actual)
+        e_df, e_sr = _is_pandas_dataframe(expected), _is_pandas_series(expected)
+        if not ((a_df or a_sr) and (e_df or e_sr)):
+            return None
+        if a_df != e_df or a_sr != e_sr:
+            return ComparisonResult(
+                match=False,
+                error_message=(
+                    f"pandas type mismatch: {type(actual).__name__} vs {type(expected).__name__}"
+                ),
+            )
+        try:
+            actual_np = actual.to_numpy()
+            expected_np = expected.to_numpy()
+        except Exception as e:
+            return ComparisonResult(match=False, error_message=f"pandas comparison failed: {e}")
+        np_result = self._compare_numpy_arrays(actual_np, expected_np)
+        if np_result is None:
+            return ComparisonResult(
+                match=False,
+                error_message="pandas values could not be compared as arrays",
+            )
+        return np_result
 
     def _compare_sequences(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare sequences (lists, tuples, etc.)."""
