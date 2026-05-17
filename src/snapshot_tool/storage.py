@@ -154,17 +154,19 @@ def _safe_param_blob(values) -> bytes:
     row is always writable. This blob is metadata only — snapshot identity is
     the str()-based param_hash, so the substitution can't cause a mismatch.
     """
-    seq = tuple(values)
     try:
-        return pickle.dumps(seq, protocol=pickle.HIGHEST_PROTOCOL)
+        return pickle.dumps(values, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
         pass
+    # Preserve the original container type (params are tuples, param_names are
+    # lists) so round-tripped metadata keeps the shape callers expect.
+    rebuild = list if isinstance(values, list) else tuple
     try:
         return pickle.dumps(
-            tuple(serialize_value(v) for v in seq), protocol=pickle.HIGHEST_PROTOCOL
+            rebuild(serialize_value(v) for v in values), protocol=pickle.HIGHEST_PROTOCOL
         )
     except Exception:
-        return pickle.dumps([repr(v) for v in seq], protocol=pickle.HIGHEST_PROTOCOL)
+        return pickle.dumps(rebuild(repr(v) for v in values), protocol=pickle.HIGHEST_PROTOCOL)
 
 
 @dataclass
