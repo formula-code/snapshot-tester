@@ -242,6 +242,32 @@ class SnapshotCLI:
                 tasks.append((benchmark, None))
         return tasks
 
+    def _build_test_labels(self, args, benchmark_dir, storage) -> dict:
+        """Reconstruct test_id -> "module.benchmark params" labels.
+
+        Used only on a regression to name the offending benchmarks. Mirrors the
+        discovery + filter + param expansion the verify run used so the test_ids
+        line up with baseline.json / per_test_status.
+        """
+        discovery = BenchmarkDiscovery(benchmark_dir)
+        benchmarks = discovery.discover_all()
+        if getattr(args, "filter", None):
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
+        runner = BenchmarkRunner(benchmark_dir)
+        labels: dict = {}
+        for benchmark, params in self._build_tasks(runner, benchmarks):
+            params_t = () if params is None else tuple(params)
+            test_id = storage.get_test_id(
+                module_path=benchmark.module_path,
+                benchmark_name=benchmark.name,
+                parameters=params_t,
+                class_name=benchmark.class_name,
+            )
+            labels[test_id] = f"{benchmark.module_path}.{benchmark.name} {params_t}"
+        return labels
+
     def _capture_command(self, args) -> int:
         """Handle the capture command."""
         # Update config from command line
@@ -765,6 +791,33 @@ class SnapshotCLI:
             baseline_entries: dict[str, str] = baseline_payload["entries"]
             transitions = compute_transitions(baseline_entries, per_test_status)
             summary.update(transitions)
+
+            # On a regression, surface *which* benchmarks regressed so they can
+            # be hunted/excluded. Cost (a discovery + param expansion pass) is
+            # only paid when pass-to-fail / skip-to-fail is non-zero.
+            if transitions.get("pass-to-fail", 0) or transitions.get("skip-to-fail", 0):
+                try:
+                    labels = self._build_test_labels(args, benchmark_dir, storage)
+                    p2f, s2f = [], []
+                    for tid, b_status in baseline_entries.items():
+                        if per_test_status.get(tid) != "fail":
+                            continue
+                        if b_status == "pass":
+                            p2f.append(labels.get(tid, tid))
+                        elif b_status == "skip":
+                            s2f.append(labels.get(tid, tid))
+                    summary["pass-to-fail-ids"] = sorted(p2f)
+                    summary["skip-to-fail-ids"] = sorted(s2f)
+                    if p2f:
+                        logger.error(f"\npass-to-fail benchmarks ({len(p2f)}):")
+                        for label in sorted(p2f):
+                            logger.error(f"  {label}")
+                    if s2f:
+                        logger.error(f"\nskip-to-fail benchmarks ({len(s2f)}):")
+                        for label in sorted(s2f):
+                            logger.error(f"  {label}")
+                except Exception as e:
+                    logger.warning(f"Could not resolve regressed benchmark names: {e}")
 
             logger.info("\nBaseline transitions:")
             for k in [
