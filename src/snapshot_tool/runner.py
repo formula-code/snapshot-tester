@@ -16,6 +16,7 @@ import sys
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -946,6 +947,18 @@ def iter_task_results(
     if not picklable:
         return
 
+    # A single worker death (OOM-kill on a memory-heavy benchmark, segfault in
+    # a native extension) breaks the *whole* ProcessPoolExecutor: every pending
+    # future then raises BrokenProcessPool. Marking all of them failed would
+    # poison the entire batch (including the fast benchmarks that would pass)
+    # and turn one bad benchmark into a mass false-skip. Instead, on pool
+    # breakage we re-run every not-yet-completed task in-process, serially.
+    # Serial execution is validated byte-identical to parallel, so this only
+    # costs speed, never correctness.
+    done_idx = set()
+    pool_broken = False
+    fut_to_task = {}
+
     with ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_worker_init,
@@ -956,14 +969,19 @@ def iter_task_results(
             timeout,
         ),
     ) as ex:
-        fut_to_idx = {
-            ex.submit(_worker_run, bench, params): idx for idx, bench, params in picklable
+        fut_to_task = {
+            ex.submit(_worker_run, bench, params): (idx, bench, params)
+            for idx, bench, params in picklable
         }
-        for fut in as_completed(fut_to_idx):
-            idx = fut_to_idx[fut]
+        for fut in as_completed(fut_to_task):
+            idx, _, _ = fut_to_task[fut]
             try:
-                yield idx, fut.result()
+                result = fut.result()
+            except BrokenProcessPool:
+                pool_broken = True
+                break
             except Exception as e:
+                done_idx.add(idx)
                 yield (
                     idx,
                     TaskResult(
@@ -971,3 +989,25 @@ def iter_task_results(
                         failure_reason=f"worker crashed: {type(e).__name__}: {e}",
                     ),
                 )
+                continue
+            done_idx.add(idx)
+            yield idx, result
+
+    if pool_broken:
+        remaining = sorted(
+            (
+                (idx, bench, params)
+                for idx, bench, params in fut_to_task.values()
+                if idx not in done_idx
+            ),
+            key=lambda t: t[0],
+        )
+        logger.warning(
+            "Worker pool broke (likely an OOM-killed benchmark); falling back to "
+            f"in-process serial execution for the remaining {len(remaining)} task(s)"
+        )
+        serial_runner = BenchmarkRunner(
+            benchmark_dir, project_dir=project_dir, seed=seed, timeout=timeout
+        )
+        for idx, bench, params in remaining:
+            yield idx, _execute_one(serial_runner, bench, params)
