@@ -144,6 +144,29 @@ def deserialize_value(value: Any) -> Any:
     return value
 
 
+def _safe_param_blob(values) -> bytes:
+    """Pickle a parameter sequence, tolerating unpicklable elements.
+
+    Real benchmark suites parametrize over bare lambdas / local functions
+    (pandas rolling & groupby). The raw pickle of such a tuple raises
+    PicklingError; rather than aborting the whole capture, fall back to
+    per-element ``serialize_value`` placeholders (and finally to repr) so the
+    row is always writable. This blob is metadata only — snapshot identity is
+    the str()-based param_hash, so the substitution can't cause a mismatch.
+    """
+    seq = tuple(values)
+    try:
+        return pickle.dumps(seq, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass
+    try:
+        return pickle.dumps(
+            tuple(serialize_value(v) for v in seq), protocol=pickle.HIGHEST_PROTOCOL
+        )
+    except Exception:
+        return pickle.dumps([repr(v) for v in seq], protocol=pickle.HIGHEST_PROTOCOL)
+
+
 @dataclass
 class SnapshotMetadata:
     """Metadata for a snapshot."""
@@ -605,11 +628,15 @@ class SnapshotManager:
         if not capture_failed:
             blob_hash = self._store_blob(return_value)
 
-        params_blob = pickle.dumps(tuple(meta.parameters), protocol=pickle.HIGHEST_PROTOCOL)
+        # Some real benchmarks parametrize over unpicklable values (pandas
+        # rolling/groupby use bare lambdas as params). params_blob is metadata
+        # only — identity is the str()-based param_hash, and verify/baseline
+        # re-derive params from get_param_combinations, never from this blob —
+        # so on a pickling failure we substitute picklable placeholders rather
+        # than letting one benchmark abort the whole capture run.
+        params_blob = _safe_param_blob(tuple(meta.parameters))
         param_names_blob = (
-            pickle.dumps(list(meta.param_names), protocol=pickle.HIGHEST_PROTOCOL)
-            if meta.param_names is not None
-            else None
+            _safe_param_blob(list(meta.param_names)) if meta.param_names is not None else None
         )
 
         with self._conn:
