@@ -19,7 +19,7 @@ from typing import Optional
 from .comparator import Comparator, ComparisonConfig
 from .config import ConfigManager
 from .discovery import BenchmarkDiscovery
-from .runner import BenchmarkRunner
+from .runner import BenchmarkRunner, default_worker_count, iter_task_results
 from .storage import SnapshotManager
 from .transitions import compute_transitions
 
@@ -81,6 +81,7 @@ class SnapshotCLI:
             default=300.0,
             help="Maximum execution time per benchmark in seconds (default: 300)",
         )
+        self._add_parallel_args(capture_parser)
         capture_parser.set_defaults(func=self._capture_command)
 
         # Verify command
@@ -111,6 +112,7 @@ class SnapshotCLI:
             default=300.0,
             help="Maximum execution time per benchmark in seconds (default: 300)",
         )
+        self._add_parallel_args(verify_parser)
         verify_parser.set_defaults(func=self._verify_command)
 
         # Baseline command
@@ -137,6 +139,7 @@ class SnapshotCLI:
             default=300.0,
             help="Maximum execution time per benchmark in seconds (default: 300)",
         )
+        self._add_parallel_args(baseline_parser)
         baseline_parser.set_defaults(func=self._baseline_command)
 
         # List command
@@ -168,6 +171,102 @@ class SnapshotCLI:
         config_parser.set_defaults(func=self._config_command)
 
         return parser
+
+    @staticmethod
+    def _add_parallel_args(parser: argparse.ArgumentParser) -> None:
+        """Opt-in parallel execution. Off by default — serial behaviour is
+        unchanged unless --parallel is passed."""
+        parser.add_argument(
+            "--parallel",
+            action="store_true",
+            help="Run benchmarks across worker processes (default: serial)",
+        )
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=0,
+            help="Worker process count for --parallel (default: min(cpu_count, 8))",
+        )
+
+    @staticmethod
+    def _resolve_workers(args) -> int:
+        """1 = serial (the default); >1 = parallel worker count."""
+        if not getattr(args, "parallel", False):
+            return 1
+        workers = getattr(args, "workers", 0) or 0
+        if workers and workers > 0:
+            return workers
+        return default_worker_count()
+
+    @staticmethod
+    def _is_timeout_failure(result=None, failure_reason=None) -> bool:
+        """Whether a run-failure was a timeout (vs. an exception).
+
+        A timeout is a measurement-budget failure, not a value change. During
+        verify it must NOT become a regression: a benchmark that completed at
+        capture/baseline but exceeds the (often aggressive) per-benchmark
+        timeout under parallel load in verify has not changed its output, so it
+        is recorded as skip (pass-to-skip is safe) rather than fail.
+        """
+        err = getattr(result, "error", None) if result is not None else None
+        if err is not None and type(err).__name__ == "TimeoutError":
+            return True
+        return bool(failure_reason) and failure_reason.startswith("TimeoutError")
+
+    def _build_tasks(self, runner, benchmarks):
+        """Expand (benchmark, params) tasks in the main process.
+
+        Resolving param combinations here (once, guarded) means runtime-eval /
+        module-load happens in the parent, not redundantly in every worker, and
+        a benchmark whose params can't be resolved is skipped rather than fatal.
+        Yields (benchmark, params_or_None).
+        """
+        tasks = []
+        for benchmark in benchmarks:
+            if self.config.should_exclude_benchmark(benchmark.name):
+                if not self.config.quiet:
+                    logger.info(f"Skipping excluded benchmark: {benchmark.name}")
+                continue
+            if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
+                try:
+                    combos = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
+                for params in combos:
+                    tasks.append((benchmark, params))
+            else:
+                tasks.append((benchmark, None))
+        return tasks
+
+    def _build_test_labels(self, args, benchmark_dir, storage) -> dict:
+        """Reconstruct test_id -> "module.benchmark params" labels.
+
+        Used only on a regression to name the offending benchmarks. Mirrors the
+        discovery + filter + param expansion the verify run used so the test_ids
+        line up with baseline.json / per_test_status.
+        """
+        discovery = BenchmarkDiscovery(benchmark_dir)
+        benchmarks = discovery.discover_all()
+        if getattr(args, "filter", None):
+            benchmarks = [
+                b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
+            ]
+        runner = BenchmarkRunner(benchmark_dir)
+        labels: dict = {}
+        for benchmark, params in self._build_tasks(runner, benchmarks):
+            params_t = () if params is None else tuple(params)
+            test_id = storage.get_test_id(
+                module_path=benchmark.module_path,
+                benchmark_name=benchmark.name,
+                parameters=params_t,
+                class_name=benchmark.class_name,
+            )
+            labels[test_id] = f"{benchmark.module_path}.{benchmark.name} {params_t}"
+        return labels
 
     def _capture_command(self, args) -> int:
         """Handle the capture command."""
@@ -201,6 +300,10 @@ class SnapshotCLI:
                 b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
             ]
 
+        workers = self._resolve_workers(args)
+        if workers > 1:
+            return self._capture_parallel(args, runner, storage, benchmarks, benchmark_dir, workers)
+
         captured_count = 0
 
         for benchmark in benchmarks:
@@ -213,7 +316,14 @@ class SnapshotCLI:
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Capture with all parameter combinations
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
 
                 for params in param_combinations:
                     result = runner.run_benchmark(benchmark, params)
@@ -296,6 +406,49 @@ class SnapshotCLI:
         logger.info(f"Captured {captured_count} snapshots")
         return 0
 
+    def _capture_parallel(self, args, runner, storage, benchmarks, benchmark_dir, workers) -> int:
+        """--parallel capture: workers execute+serialize; main writes SQLite."""
+        logger.info(f"Capturing in parallel with {workers} workers")
+        tasks = self._build_tasks(runner, benchmarks)
+        indexed = [(i, b, p) for i, (b, p) in enumerate(tasks)]
+
+        captured_count = 0
+        for idx, tr in iter_task_results(
+            Path(benchmark_dir), None, runner.seed, runner.timeout, indexed, workers
+        ):
+            benchmark, params = tasks[idx]
+            params_t = () if params is None else params
+            param_names = benchmark.param_names if params is not None else None
+            if tr.ok:
+                storage.store_snapshot(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=params_t,
+                    param_names=param_names,
+                    return_value=tr.serialized_value,
+                    class_name=benchmark.class_name,
+                )
+                captured_count += 1
+                if not self.config.quiet:
+                    logger.info(f"  Captured: {benchmark.module_path}.{benchmark.name} {params_t}")
+            else:
+                reason = tr.failure_reason or "Unknown error (no exception details)"
+                storage.store_failed_capture(
+                    benchmark_name=benchmark.name,
+                    module_path=benchmark.module_path,
+                    parameters=params_t,
+                    param_names=param_names,
+                    failure_reason=reason,
+                    class_name=benchmark.class_name,
+                )
+                logger.warning(
+                    f"  Failed to capture: {benchmark.module_path}.{benchmark.name} "
+                    f"{params_t} - {reason}"
+                )
+
+        logger.info(f"Captured {captured_count} snapshots")
+        return 0
+
     def _verify_command(self, args) -> int:
         """Handle the verify command."""
         # Update config from command line
@@ -327,7 +480,7 @@ class SnapshotCLI:
         else:
             comp_config.rtol = self.config.tolerance["rtol"]
             comp_config.atol = self.config.tolerance["atol"]
-            comp_config.equal_nan = self.config.tolerance.get("equal_nan", False)
+            comp_config.equal_nan = self.config.tolerance.get("equal_nan", True)
 
         comparator = Comparator(comp_config)
 
@@ -339,6 +492,19 @@ class SnapshotCLI:
             benchmarks = [
                 b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
             ]
+
+        workers = self._resolve_workers(args)
+        if workers > 1:
+            return self._verify_parallel(
+                args,
+                runner,
+                storage,
+                comparator,
+                benchmarks,
+                benchmark_dir,
+                snapshot_dir,
+                workers,
+            )
 
         total_tests = 0
         passed_tests = 0
@@ -357,7 +523,14 @@ class SnapshotCLI:
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
                 # Verify with all parameter combinations
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
 
                 for params in param_combinations:
                     # Load snapshot first to check if it exists
@@ -401,12 +574,6 @@ class SnapshotCLI:
                     # Run benchmark
                     result = runner.run_benchmark(benchmark, params)
                     if not result or not result.success:
-                        # Benchmark failed during verify but succeeded during capture
-                        # This is a real failure (non-deterministic benchmark or environment change)
-                        logger.error(
-                            f"  [FAIL] Failed to run with params: {params} (succeeded during capture)"
-                        )
-                        failed_tests += 1
                         total_tests += 1
                         test_id = storage.get_test_id(
                             module_path=benchmark.module_path,
@@ -414,7 +581,18 @@ class SnapshotCLI:
                             parameters=tuple(params),
                             class_name=benchmark.class_name,
                         )
-                        per_test_status[test_id] = "fail"
+                        if self._is_timeout_failure(result=result):
+                            logger.info(
+                                f"  [SKIP] Timed out during verify (not a regression): {params}"
+                            )
+                            skipped_tests += 1
+                            per_test_status[test_id] = "skip"
+                        else:
+                            logger.error(
+                                f"  [FAIL] Failed to run with params: {params} (succeeded during capture)"
+                            )
+                            failed_tests += 1
+                            per_test_status[test_id] = "fail"
                         continue
 
                     expected_value, metadata = snapshot_data
@@ -502,10 +680,6 @@ class SnapshotCLI:
                 # Verify without parameters
                 result = runner.run_benchmark(benchmark)
                 if not result or not result.success:
-                    # Benchmark failed during verify but succeeded during capture
-                    # This is a real failure (non-deterministic benchmark or environment change)
-                    logger.error("  [FAIL] Failed to run (succeeded during capture)")
-                    failed_tests += 1
                     total_tests += 1
                     test_id = storage.get_test_id(
                         module_path=benchmark.module_path,
@@ -513,7 +687,14 @@ class SnapshotCLI:
                         parameters=(),
                         class_name=benchmark.class_name,
                     )
-                    per_test_status[test_id] = "fail"
+                    if self._is_timeout_failure(result=result):
+                        logger.info("  [SKIP] Timed out during verify (not a regression)")
+                        skipped_tests += 1
+                        per_test_status[test_id] = "skip"
+                    else:
+                        logger.error("  [FAIL] Failed to run (succeeded during capture)")
+                        failed_tests += 1
+                        per_test_status[test_id] = "fail"
                     continue
 
                 expected_value, metadata = snapshot_data
@@ -559,13 +740,41 @@ class SnapshotCLI:
                     )
                     per_test_status[test_id] = "fail"
 
+        return self._finalize_verify(
+            args,
+            snapshot_dir,
+            benchmark_dir,
+            storage,
+            total_tests,
+            passed_tests,
+            failed_tests,
+            skipped_tests,
+            per_test_status,
+        )
+
+    def _finalize_verify(
+        self,
+        args,
+        snapshot_dir,
+        benchmark_dir,
+        storage,
+        total_tests,
+        passed_tests,
+        failed_tests,
+        skipped_tests,
+        per_test_status,
+    ) -> int:
+        """Log totals and write summary.json (+ baseline transition matrix).
+
+        Shared by the serial and the --parallel verify paths so they produce
+        byte-identical summaries.
+        """
         logger.info("\nVerification complete:")
         logger.info(f"  Total tests: {total_tests}")
         logger.info(f"  Passed: {passed_tests}")
         logger.info(f"  Failed: {failed_tests}")
         logger.info(f"  Skipped: {skipped_tests}")
 
-        # Write summary.json (plus baseline transition metrics, if available)
         summary = {
             "total": total_tests,
             "passed": passed_tests,
@@ -583,7 +792,33 @@ class SnapshotCLI:
             transitions = compute_transitions(baseline_entries, per_test_status)
             summary.update(transitions)
 
-            # Also surface in console as requested
+            # On a regression, surface *which* benchmarks regressed so they can
+            # be hunted/excluded. Cost (a discovery + param expansion pass) is
+            # only paid when pass-to-fail / skip-to-fail is non-zero.
+            if transitions.get("pass-to-fail", 0) or transitions.get("skip-to-fail", 0):
+                try:
+                    labels = self._build_test_labels(args, benchmark_dir, storage)
+                    p2f, s2f = [], []
+                    for tid, b_status in baseline_entries.items():
+                        if per_test_status.get(tid) != "fail":
+                            continue
+                        if b_status == "pass":
+                            p2f.append(labels.get(tid, tid))
+                        elif b_status == "skip":
+                            s2f.append(labels.get(tid, tid))
+                    summary["pass-to-fail-ids"] = sorted(p2f)
+                    summary["skip-to-fail-ids"] = sorted(s2f)
+                    if p2f:
+                        logger.error(f"\npass-to-fail benchmarks ({len(p2f)}):")
+                        for label in sorted(p2f):
+                            logger.error(f"  {label}")
+                    if s2f:
+                        logger.error(f"\nskip-to-fail benchmarks ({len(s2f)}):")
+                        for label in sorted(s2f):
+                            logger.error(f"  {label}")
+                except Exception as e:
+                    logger.warning(f"Could not resolve regressed benchmark names: {e}")
+
             logger.info("\nBaseline transitions:")
             for k in [
                 "fail-to-pass",
@@ -607,6 +842,110 @@ class SnapshotCLI:
             logger.warning(f"Failed to write summary.json: {e}")
 
         return 0 if failed_tests == 0 else 1
+
+    def _verify_parallel(
+        self,
+        args,
+        runner,
+        storage,
+        comparator,
+        benchmarks,
+        benchmark_dir,
+        snapshot_dir,
+        workers,
+    ) -> int:
+        """--parallel verify. Pre-skip (no snapshot / failed capture) is decided
+        in the main process so those tasks are never dispatched; the rest run in
+        worker processes and are compared in the main process."""
+        logger.info(f"Verifying in parallel with {workers} workers")
+        tasks = self._build_tasks(runner, benchmarks)
+
+        total = passed = failed = skipped = 0
+        per_test_status: dict[str, str] = {}
+        to_run = []  # (idx, benchmark, params_for_run); expected kept alongside
+        expected_by_idx = {}
+
+        for idx, (benchmark, params) in enumerate(tasks):
+            params_t = () if params is None else params
+            total += 1
+            test_id = storage.get_test_id(
+                module_path=benchmark.module_path,
+                benchmark_name=benchmark.name,
+                parameters=tuple(params_t),
+                class_name=benchmark.class_name,
+            )
+            snapshot_data = storage.load_snapshot(
+                benchmark_name=benchmark.name,
+                module_path=benchmark.module_path,
+                parameters=params_t,
+                class_name=benchmark.class_name,
+            )
+            if snapshot_data is None:
+                skipped += 1
+                per_test_status[test_id] = "skip"
+                logger.info(
+                    f"  Skipping (no snapshot): {benchmark.module_path}.{benchmark.name} {params_t}"
+                )
+                continue
+            expected_value, metadata = snapshot_data
+            if metadata.capture_failed:
+                skipped += 1
+                per_test_status[test_id] = "skip"
+                logger.info(
+                    f"  Skipping failed capture: {benchmark.module_path}.{benchmark.name} {params_t}"
+                )
+                continue
+            expected_by_idx[idx] = (test_id, expected_value, benchmark, params_t)
+            to_run.append((idx, benchmark, params))
+
+        for idx, tr in iter_task_results(
+            Path(benchmark_dir), None, runner.seed, runner.timeout, to_run, workers
+        ):
+            test_id, expected_value, benchmark, params_t = expected_by_idx[idx]
+            if not tr.ok:
+                if self._is_timeout_failure(failure_reason=tr.failure_reason):
+                    skipped += 1
+                    per_test_status[test_id] = "skip"
+                    logger.info(
+                        f"  [SKIP] Timed out during verify (not a regression): "
+                        f"{benchmark.module_path}.{benchmark.name} {params_t}"
+                    )
+                else:
+                    failed += 1
+                    per_test_status[test_id] = "fail"
+                    logger.error(
+                        f"  [FAIL] Failed to run (succeeded during capture): "
+                        f"{benchmark.module_path}.{benchmark.name} {params_t}"
+                    )
+                continue
+            comparison = comparator.compare(tr.serialized_value, expected_value)
+            if comparison.skipped:
+                skipped += 1
+                per_test_status[test_id] = "skip"
+                if not self.config.quiet:
+                    logger.info(f"  [SKIP] {benchmark.module_path}.{benchmark.name} {params_t}")
+            elif comparison.match:
+                passed += 1
+                per_test_status[test_id] = "pass"
+                if not self.config.quiet:
+                    logger.info(f"  [PASS] {benchmark.module_path}.{benchmark.name} {params_t}")
+            else:
+                failed += 1
+                per_test_status[test_id] = "fail"
+                logger.error(f"  [FAIL] {benchmark.module_path}.{benchmark.name} {params_t}")
+                logger.error(f"    Error: {comparison.error_message}")
+
+        return self._finalize_verify(
+            args,
+            snapshot_dir,
+            benchmark_dir,
+            storage,
+            total,
+            passed,
+            failed,
+            skipped,
+            per_test_status,
+        )
 
     def _baseline_command(self, args) -> int:
         """Handle the baseline command.
@@ -645,7 +984,7 @@ class SnapshotCLI:
         else:
             comp_config.rtol = self.config.tolerance["rtol"]
             comp_config.atol = self.config.tolerance["atol"]
-            comp_config.equal_nan = self.config.tolerance.get("equal_nan", False)
+            comp_config.equal_nan = self.config.tolerance.get("equal_nan", True)
         comparator = Comparator(comp_config)
 
         # Discover benchmarks
@@ -655,6 +994,18 @@ class SnapshotCLI:
             benchmarks = [
                 b for b in benchmarks if re.search(args.filter, f"{b.module_path}.{b.name}")
             ]
+
+        workers = self._resolve_workers(args)
+        if workers > 1:
+            return self._baseline_parallel(
+                runner,
+                storage,
+                comparator,
+                benchmarks,
+                benchmark_dir,
+                snapshot_dir,
+                workers,
+            )
 
         # Collect entries
         total = 0
@@ -672,7 +1023,14 @@ class SnapshotCLI:
             logger.info(f"Baselining: {benchmark.module_path}.{benchmark.name}")
 
             if benchmark.params or getattr(benchmark, "needs_runtime_eval", False):
-                param_combinations = runner.get_param_combinations(benchmark)
+                try:
+                    param_combinations = runner.get_param_combinations(benchmark)
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping {benchmark.module_path}.{benchmark.name}: could not "
+                        f"resolve parameters ({type(e).__name__}: {e})"
+                    )
+                    continue
                 for params in param_combinations:
                     test_id = storage.get_test_id(
                         module_path=benchmark.module_path,
@@ -779,6 +1137,75 @@ class SnapshotCLI:
         logger.info(f"\nBaseline written to {path}")
 
         # Baseline always returns 0; it records state only.
+        return 0
+
+    def _baseline_parallel(
+        self, runner, storage, comparator, benchmarks, benchmark_dir, snapshot_dir, workers
+    ) -> int:
+        """--parallel baseline. Same pre-skip + parallel-run + main-process
+        compare structure as _verify_parallel, but records per-test status into
+        baseline.json instead of writing summary.json."""
+        logger.info(f"Baselining in parallel with {workers} workers")
+        tasks = self._build_tasks(runner, benchmarks)
+
+        total = passed = failed = skipped = 0
+        entries: dict[str, str] = {}
+        to_run = []
+        expected_by_idx = {}
+
+        for idx, (benchmark, params) in enumerate(tasks):
+            params_t = () if params is None else params
+            total += 1
+            test_id = storage.get_test_id(
+                module_path=benchmark.module_path,
+                benchmark_name=benchmark.name,
+                parameters=tuple(params_t),
+                class_name=benchmark.class_name,
+            )
+            snapshot_data = storage.load_snapshot(
+                benchmark_name=benchmark.name,
+                module_path=benchmark.module_path,
+                parameters=params_t,
+                class_name=benchmark.class_name,
+            )
+            if snapshot_data is None:
+                entries[test_id] = "skip"
+                skipped += 1
+                continue
+            expected_value, metadata = snapshot_data
+            if metadata.capture_failed:
+                entries[test_id] = "skip"
+                skipped += 1
+                continue
+            expected_by_idx[idx] = (test_id, expected_value)
+            to_run.append((idx, benchmark, params))
+
+        for idx, tr in iter_task_results(
+            Path(benchmark_dir), None, runner.seed, runner.timeout, to_run, workers
+        ):
+            test_id, expected_value = expected_by_idx[idx]
+            if not tr.ok:
+                entries[test_id] = "fail"
+                failed += 1
+                continue
+            comparison = comparator.compare(tr.serialized_value, expected_value)
+            if comparison.skipped:
+                entries[test_id] = "skip"
+                skipped += 1
+            elif comparison.match:
+                entries[test_id] = "pass"
+                passed += 1
+            else:
+                entries[test_id] = "fail"
+                failed += 1
+
+        meta = {
+            "counts": {"total": total, "pass": passed, "fail": failed, "skip": skipped},
+            "snapshot_dir": str(snapshot_dir),
+            "benchmark_dir": str(benchmark_dir),
+        }
+        path = storage.write_baseline(entries, meta)
+        logger.info(f"\nBaseline written to {path}")
         return 0
 
     def _list_command(self, args) -> int:

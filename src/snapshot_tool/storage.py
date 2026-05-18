@@ -65,6 +65,110 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_module_bench
 """
 
 
+# ----------------------------------------------------------------------
+# Value serialization (module-level so worker processes can serialize a
+# captured value without holding a SnapshotManager / SQLite handle).
+# Behaviour is unchanged from the previous SnapshotManager methods.
+# ----------------------------------------------------------------------
+
+
+def serialize_dict_safely(d: dict) -> dict:
+    result = {}
+    for key, value in d.items():
+        try:
+            result[serialize_value(key)] = serialize_value(value)
+        except Exception as e:
+            result[f"__error_{key}__"] = f"Cannot serialize: {e}"
+    return result
+
+
+def serialize_value(value: Any) -> Any:
+    """Return ``value`` if it round-trips through pickle, else a tagged
+    placeholder dict (``__generator__`` / ``__callable__`` /
+    ``__class_instance__`` / ``__unpicklable__``). The result is always
+    picklable, which is what lets it cross a process-pool boundary."""
+    try:
+        pickled = pickle.dumps(value)
+        pickle.loads(pickled)  # round-trip test
+        return value
+    except Exception as e:
+        if hasattr(value, "__iter__") and hasattr(value, "__next__"):
+            return {
+                "__generator__": True,
+                "__generator_type__": type(value).__name__,
+                "__error__": f"Cannot pickle generator: {e}",
+            }
+
+        if callable(value):
+            return {
+                "__callable__": True,
+                "__callable_type__": type(value).__name__,
+                "name": getattr(value, "__name__", ""),
+                "qualname": getattr(value, "__qualname__", ""),
+                "module": getattr(value, "__module__", ""),
+            }
+
+        if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
+            try:
+                plain_list = [serialize_value(item) for item in value]
+                pickle.dumps(plain_list)
+                return plain_list
+            except Exception:
+                pass
+
+        if hasattr(value, "__dict__"):
+            try:
+                serialized_dict = serialize_dict_safely(value.__dict__)
+            except Exception as dict_error:
+                serialized_dict = {"__dict_error__": f"Cannot serialize __dict__: {dict_error}"}
+
+            return {
+                "__class_instance__": True,
+                "__class_name__": value.__class__.__name__,
+                "__module__": getattr(value.__class__, "__module__", ""),
+                "__dict__": serialized_dict,
+                "__error__": str(e),
+            }
+
+        return {
+            "__unpicklable__": True,
+            "__type__": type(value).__name__,
+            "__str__": str(value),
+            "__error__": str(e),
+        }
+
+
+def deserialize_value(value: Any) -> Any:
+    # Tagged dicts (__generator__, __class_instance__, ...) are returned as-is;
+    # the Comparator interprets them.
+    return value
+
+
+def _safe_param_blob(values) -> bytes:
+    """Pickle a parameter sequence, tolerating unpicklable elements.
+
+    Real benchmark suites parametrize over bare lambdas / local functions
+    (pandas rolling & groupby). The raw pickle of such a tuple raises
+    PicklingError; rather than aborting the whole capture, fall back to
+    per-element ``serialize_value`` placeholders (and finally to repr) so the
+    row is always writable. This blob is metadata only — snapshot identity is
+    the str()-based param_hash, so the substitution can't cause a mismatch.
+    """
+    try:
+        return pickle.dumps(values, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass
+    # Preserve the original container type (params are tuples, param_names are
+    # lists) so round-tripped metadata keeps the shape callers expect.
+    rebuild = list if isinstance(values, list) else tuple
+    try:
+        return pickle.dumps(
+            rebuild(serialize_value(v) for v in values), protocol=pickle.HIGHEST_PROTOCOL
+        )
+    except Exception:
+        return pickle.dumps(rebuild(repr(v) for v in values), protocol=pickle.HIGHEST_PROTOCOL)
+
+
 @dataclass
 class SnapshotMetadata:
     """Metadata for a snapshot."""
@@ -526,11 +630,15 @@ class SnapshotManager:
         if not capture_failed:
             blob_hash = self._store_blob(return_value)
 
-        params_blob = pickle.dumps(tuple(meta.parameters), protocol=pickle.HIGHEST_PROTOCOL)
+        # Some real benchmarks parametrize over unpicklable values (pandas
+        # rolling/groupby use bare lambdas as params). params_blob is metadata
+        # only — identity is the str()-based param_hash, and verify/baseline
+        # re-derive params from get_param_combinations, never from this blob —
+        # so on a pickling failure we substitute picklable placeholders rather
+        # than letting one benchmark abort the whole capture run.
+        params_blob = _safe_param_blob(tuple(meta.parameters))
         param_names_blob = (
-            pickle.dumps(list(meta.param_names), protocol=pickle.HIGHEST_PROTOCOL)
-            if meta.param_names is not None
-            else None
+            _safe_param_blob(list(meta.param_names)) if meta.param_names is not None else None
         )
 
         with self._conn:
@@ -643,69 +751,13 @@ class SnapshotManager:
     # ------------------------------------------------------------------
 
     def _serialize_dict_safely(self, d: dict) -> dict:
-        result = {}
-        for key, value in d.items():
-            try:
-                result[self._serialize_value(key)] = self._serialize_value(value)
-            except Exception as e:
-                result[f"__error_{key}__"] = f"Cannot serialize: {e}"
-        return result
+        return serialize_dict_safely(d)
 
     def _serialize_value(self, value: Any) -> Any:
-        try:
-            pickled = pickle.dumps(value)
-            pickle.loads(pickled)  # round-trip test
-            return value
-        except Exception as e:
-            if hasattr(value, "__iter__") and hasattr(value, "__next__"):
-                return {
-                    "__generator__": True,
-                    "__generator_type__": type(value).__name__,
-                    "__error__": f"Cannot pickle generator: {e}",
-                }
-
-            if callable(value):
-                return {
-                    "__callable__": True,
-                    "__callable_type__": type(value).__name__,
-                    "name": getattr(value, "__name__", ""),
-                    "qualname": getattr(value, "__qualname__", ""),
-                    "module": getattr(value, "__module__", ""),
-                }
-
-            if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
-                try:
-                    plain_list = [self._serialize_value(item) for item in value]
-                    pickle.dumps(plain_list)
-                    return plain_list
-                except Exception:
-                    pass
-
-            if hasattr(value, "__dict__"):
-                try:
-                    serialized_dict = self._serialize_dict_safely(value.__dict__)
-                except Exception as dict_error:
-                    serialized_dict = {"__dict_error__": f"Cannot serialize __dict__: {dict_error}"}
-
-                return {
-                    "__class_instance__": True,
-                    "__class_name__": value.__class__.__name__,
-                    "__module__": getattr(value.__class__, "__module__", ""),
-                    "__dict__": serialized_dict,
-                    "__error__": str(e),
-                }
-
-            return {
-                "__unpicklable__": True,
-                "__type__": type(value).__name__,
-                "__str__": str(value),
-                "__error__": str(e),
-            }
+        return serialize_value(value)
 
     def _deserialize_value(self, value: Any) -> Any:
-        # Tagged dicts (__generator__, __class_instance__, ...) are returned as-is;
-        # the Comparator interprets them.
-        return value
+        return deserialize_value(value)
 
     # ------------------------------------------------------------------
     # Metadata helpers (git, python, platform)

@@ -10,7 +10,7 @@ from snapshot_tool import Comparator, ComparisonConfig
 config = ComparisonConfig(
     rtol=1e-5,           # relative tolerance
     atol=1e-8,           # absolute tolerance
-    equal_nan=False,     # if True, NaN == NaN
+    equal_nan=True,      # NaN at same position == NaN (snapshot default)
     strict_types=True,   # error on dtype mismatches for numpy arrays
     strict_shapes=True,  # error on shape mismatches for numpy arrays
     ignore_order=False,  # (reserved; not currently honored by built-in strategies)
@@ -24,7 +24,7 @@ result = comparator.compare(actual, expected)
 |-------|---------|--------------|
 | `rtol` | `1e-5` | Relative tolerance applied to `\|a - b\| <= atol + rtol * \|b\|` |
 | `atol` | `1e-8` | Absolute tolerance, same formula |
-| `equal_nan` | `False` | If `True`, two NaN values compare equal |
+| `equal_nan` | `True` | Two NaN values at the same position compare equal. Defaults `True` because, for snapshot testing, a deterministic NaN that reappears unchanged is not a regression. Set `False` for `numpy.isclose` semantics. |
 | `strict_types` | `True` | Numpy array `dtype` mismatch is a failure |
 | `strict_shapes` | `True` | Numpy array `shape` mismatch is a failure |
 
@@ -85,6 +85,8 @@ def _py_isclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=False):
     if isinf(a) or isinf(b): return a == b
     return abs(a - b) <= atol + rtol * abs(b)
 ```
+
+The helper's own `equal_nan` parameter defaults to `False` (mirroring `numpy.isclose`), but `Comparator` always passes it explicitly from `ComparisonConfig.equal_nan`, which **defaults to `True`** — so in practice scalar and array NaNs compare equal unless you opt into strict semantics.
 
 The formula is **asymmetric** in `b` — that's intentional; it matches numpy's semantics. In `snapshot-tool`, `b` is always the *expected* (snapshot) value, so the tolerance scales with the magnitude of what you originally captured.
 

@@ -40,7 +40,7 @@ class SnapshotConfig:
 
     def __post_init__(self):
         if self.tolerance is None:
-            self.tolerance = {"rtol": 1e-5, "atol": 1e-8, "equal_nan": False}
+            self.tolerance = {"rtol": 1e-5, "atol": 1e-8, "equal_nan": True}
 
         if self.exclude_benchmarks is None:
             self.exclude_benchmarks = []

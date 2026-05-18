@@ -220,3 +220,9 @@ tests/.snapshots/
 
 # Snapshot testing tool output
 summary.json
+
+# Astropy benchmark artifacts written to CWD during local capture runs
+*.fits
+
+# Claude Code local session state
+.claude/

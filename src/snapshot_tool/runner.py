@@ -10,10 +10,14 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import os
+import pickle
 import sys
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -827,3 +831,183 @@ class BenchmarkRunner:
             return "attribute_error"
         else:
             return "unknown_error"
+
+
+# ----------------------------------------------------------------------
+# Optional parallel execution (opt-in via the CLI --parallel flag).
+#
+# Benchmarks are CPU-bound and use sys.settrace + per-process RNG seeding
+# and module import state, so a *process* pool (not threads) gives both
+# true parallelism and the isolation needed for deterministic snapshots.
+# Workers only execute + trace + serialize the captured value; the main
+# process keeps doing every SQLite write (SQLite is single-writer).
+# ----------------------------------------------------------------------
+
+
+def default_worker_count() -> int:
+    """Adaptive worker count: min(cpu_count, 8)."""
+    return min(os.cpu_count() or 1, 8)
+
+
+@dataclass
+class TaskResult:
+    """Picklable outcome of running one (benchmark, params) in a worker."""
+
+    ok: bool
+    serialized_value: Any = None  # serialize_value(return_value); always picklable
+    failure_reason: Optional[str] = None
+
+
+def _result_to_task_result(result: Optional[TraceResult]) -> TaskResult:
+    from .storage import serialize_value
+
+    if result is None:
+        return TaskResult(ok=False, failure_reason="Unknown error (no result)")
+    if not result.success:
+        err = result.error
+        if err is not None:
+            etype = type(err).__name__
+            emsg = str(err)
+            reason = f"{etype}: {emsg}" if emsg else etype
+        else:
+            reason = "Unknown error (no exception details)"
+        return TaskResult(ok=False, failure_reason=reason)
+    return TaskResult(ok=True, serialized_value=serialize_value(result.return_value))
+
+
+def _execute_one(
+    runner: BenchmarkRunner,
+    benchmark: BenchmarkInfo,
+    parameters: Optional[tuple],
+) -> TaskResult:
+    try:
+        result = runner.run_benchmark(benchmark, parameters)
+    except Exception as e:  # defensive: run_benchmark already guards internally
+        return TaskResult(ok=False, failure_reason=f"{type(e).__name__}: {e}")
+    return _result_to_task_result(result)
+
+
+# Per-worker-process runner, built once by the pool initializer so the
+# module cache / setup_cache are reused across the tasks a worker handles.
+_WORKER_RUNNER: Optional[BenchmarkRunner] = None
+
+
+def _worker_init(
+    benchmark_dir: str, project_dir: Optional[str], seed: int, timeout: Optional[float]
+) -> None:
+    global _WORKER_RUNNER
+    _WORKER_RUNNER = BenchmarkRunner(
+        Path(benchmark_dir),
+        project_dir=Path(project_dir) if project_dir else None,
+        seed=seed,
+        timeout=timeout,
+    )
+
+
+def _worker_run(benchmark: BenchmarkInfo, parameters: Optional[tuple]) -> TaskResult:
+    assert _WORKER_RUNNER is not None, "worker not initialized"
+    return _execute_one(_WORKER_RUNNER, benchmark, parameters)
+
+
+def iter_task_results(
+    benchmark_dir: Path,
+    project_dir: Optional[Path],
+    seed: int,
+    timeout: Optional[float],
+    tasks: list,  # list of (idx, BenchmarkInfo, params_tuple_or_None)
+    max_workers: int,
+):
+    """Yield ``(idx, TaskResult)`` for every task.
+
+    Falls back to in-process execution for the whole batch when ``max_workers``
+    <= 1, and for individual tasks whose ``(benchmark, params)`` can't be
+    pickled across the process boundary.
+    """
+    if max_workers <= 1 or len(tasks) <= 1:
+        runner = BenchmarkRunner(benchmark_dir, project_dir=project_dir, seed=seed, timeout=timeout)
+        for idx, bench, params in tasks:
+            yield idx, _execute_one(runner, bench, params)
+        return
+
+    picklable, inline = [], []
+    for idx, bench, params in tasks:
+        try:
+            pickle.dumps((bench, params))
+            picklable.append((idx, bench, params))
+        except Exception:
+            inline.append((idx, bench, params))
+
+    if inline:
+        fallback = BenchmarkRunner(
+            benchmark_dir, project_dir=project_dir, seed=seed, timeout=timeout
+        )
+        for idx, bench, params in inline:
+            yield idx, _execute_one(fallback, bench, params)
+
+    if not picklable:
+        return
+
+    # A single worker death (OOM-kill on a memory-heavy benchmark, segfault in
+    # a native extension) breaks the *whole* ProcessPoolExecutor: every pending
+    # future then raises BrokenProcessPool. Marking all of them failed would
+    # poison the entire batch (including the fast benchmarks that would pass)
+    # and turn one bad benchmark into a mass false-skip. Instead, on pool
+    # breakage we re-run every not-yet-completed task in-process, serially.
+    # Serial execution is validated byte-identical to parallel, so this only
+    # costs speed, never correctness.
+    done_idx = set()
+    pool_broken = False
+    fut_to_task = {}
+
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_worker_init,
+        initargs=(
+            str(benchmark_dir),
+            str(project_dir) if project_dir else None,
+            seed,
+            timeout,
+        ),
+    ) as ex:
+        fut_to_task = {
+            ex.submit(_worker_run, bench, params): (idx, bench, params)
+            for idx, bench, params in picklable
+        }
+        for fut in as_completed(fut_to_task):
+            idx, _, _ = fut_to_task[fut]
+            try:
+                result = fut.result()
+            except BrokenProcessPool:
+                pool_broken = True
+                break
+            except Exception as e:
+                done_idx.add(idx)
+                yield (
+                    idx,
+                    TaskResult(
+                        ok=False,
+                        failure_reason=f"worker crashed: {type(e).__name__}: {e}",
+                    ),
+                )
+                continue
+            done_idx.add(idx)
+            yield idx, result
+
+    if pool_broken:
+        remaining = sorted(
+            (
+                (idx, bench, params)
+                for idx, bench, params in fut_to_task.values()
+                if idx not in done_idx
+            ),
+            key=lambda t: t[0],
+        )
+        logger.warning(
+            "Worker pool broke (likely an OOM-killed benchmark); falling back to "
+            f"in-process serial execution for the remaining {len(remaining)} task(s)"
+        )
+        serial_runner = BenchmarkRunner(
+            benchmark_dir, project_dir=project_dir, seed=seed, timeout=timeout
+        )
+        for idx, bench, params in remaining:
+            yield idx, _execute_one(serial_runner, bench, params)

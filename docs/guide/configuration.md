@@ -20,7 +20,7 @@ writes a default `snapshot_config.json` with every field at its built-in default
   "tolerance": {
     "rtol": 1e-5,
     "atol": 1e-8,
-    "equal_nan": false
+    "equal_nan": true
   },
   "exclude_benchmarks": [],
   "trace_depth_limit": 100,
@@ -51,7 +51,7 @@ snapshot-tool config --show
 |-------|---------|--------------|
 | `tolerance.rtol` | `1e-5` | Relative tolerance for numeric comparison. Overridden by the first value of `--tolerance RTOL ATOL`. |
 | `tolerance.atol` | `1e-8` | Absolute tolerance. Overridden by the second value of `--tolerance RTOL ATOL`. |
-| `tolerance.equal_nan` | `false` | When `true`, two NaN values compare equal. No CLI override — set in the file. |
+| `tolerance.equal_nan` | `true` | When `true`, two NaN values at the same position compare equal (snapshot default — a deterministic NaN that reappears unchanged is not a regression). Set `false` for strict `numpy.isclose` semantics. No CLI override — set in the file. |
 
 The comparison formula is `|a - b| <= atol + rtol * |b|`, matching `numpy.isclose` semantics. `b` is the *expected* (snapshot) value.
 
@@ -113,7 +113,7 @@ resolves to:
 
 - `snapshot_dir = "./snapshots"` (from `--snapshot-dir`, overriding `conf.json`).
 - `tolerance.rtol = 1e-4`, `tolerance.atol = 1e-6` (from `--tolerance`).
-- `tolerance.equal_nan = <value from conf.json or false>` (not overridable on the CLI).
+- `tolerance.equal_nan = <value from conf.json or true>` (not overridable on the CLI).
 - `verbose = True` (from `-v`).
 
 ## Programmatic configuration

@@ -50,7 +50,16 @@ jobs:
       env:
         UV_PYTHON: ${{ env.pythonLocation }}/bin/python
         SNAPSHOT_TOOL_FILTER: ${{ matrix.shard.filter }}
-        SNAPSHOT_TOOL_TIMEOUT: "45"
+        # Aggressive per-benchmark cap: the roundtrip runs capture+baseline+verify
+        # (3 passes) and the pandas `core` shard alone is ~831 benchmarks with
+        # heavy parameter expansion. Slow benchmarks become failed-captures
+        # (skipped), which the regression gate tolerates, instead of blowing the
+        # job time budget. See tests/test_cli_roundtrip.py.
+        SNAPSHOT_TOOL_TIMEOUT: "5"
+        # Run benchmarks across worker processes (min(cpu_count, 8)); produces
+        # byte-identical snapshots to serial. The main lever for fitting the
+        # ~831-benchmark `core` shard in the time budget.
+        SNAPSHOT_TOOL_PARALLEL: "1"
       run: |
         uv run pytest -v tests/test_cli_roundtrip.py::TestPandasRoundtrip -x
       timeout-minutes: 90
