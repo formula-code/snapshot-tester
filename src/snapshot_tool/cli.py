@@ -1075,18 +1075,10 @@ class SnapshotCLI:
                         entries[test_id] = "fail"
                         failed += 1
                         logger.error(f"  [FAIL] Failed with params: {params}")
-                    elif self._confirm_still_matches(
-                        runner, comparator, benchmark, params, expected_value
-                    ):
+                    else:
                         entries[test_id] = "pass"
                         passed += 1
                         logger.info(f"  [PASS] Passed with params: {params}")
-                    else:
-                        entries[test_id] = "fail"
-                        failed += 1
-                        logger.warning(
-                            f"  [FAIL] Unstable (matched once, not on confirm) params: {params}"
-                        )
             else:
                 test_id = storage.get_test_id(
                     module_path=benchmark.module_path,
@@ -1131,16 +1123,10 @@ class SnapshotCLI:
                     entries[test_id] = "fail"
                     failed += 1
                     logger.error("  [FAIL] Failed")
-                elif self._confirm_still_matches(
-                    runner, comparator, benchmark, None, expected_value
-                ):
+                else:
                     entries[test_id] = "pass"
                     passed += 1
                     logger.info("  [PASS] Passed")
-                else:
-                    entries[test_id] = "fail"
-                    failed += 1
-                    logger.warning("  [FAIL] Unstable (matched once, not on confirm)")
 
         meta = {
             "counts": {"total": total, "pass": passed, "fail": failed, "skip": skipped},
@@ -1152,25 +1138,6 @@ class SnapshotCLI:
 
         # Baseline always returns 0; it records state only.
         return 0
-
-    def _confirm_still_matches(self, runner, comparator, benchmark, params, expected_value) -> bool:
-        """Re-run a benchmark and report whether it still matches the snapshot.
-
-        Stability-aware baseline: a benchmark is only recorded ``pass`` if it
-        reproduces its snapshot on a second independent run. Intrinsically
-        non-deterministic benchmarks (memory/timing/dtype-unstable) that match
-        once by luck are demoted to ``fail`` here, so they become fail-to-fail
-        (tolerated) rather than a spurious pass-to-fail regression in verify.
-        """
-        result = (
-            runner.run_benchmark(benchmark)
-            if params is None
-            else runner.run_benchmark(benchmark, params)
-        )
-        if not result or not result.success:
-            return False
-        confirm = comparator.compare(result.return_value, expected_value)
-        return bool(confirm.match) and not confirm.skipped
 
     def _baseline_parallel(
         self, runner, storage, comparator, benchmarks, benchmark_dir, snapshot_dir, workers
@@ -1185,7 +1152,6 @@ class SnapshotCLI:
         entries: dict[str, str] = {}
         to_run = []
         expected_by_idx = {}
-        task_by_idx = {}
 
         for idx, (benchmark, params) in enumerate(tasks):
             params_t = () if params is None else params
@@ -1212,13 +1178,8 @@ class SnapshotCLI:
                 skipped += 1
                 continue
             expected_by_idx[idx] = (test_id, expected_value)
-            task_by_idx[idx] = (benchmark, params)
             to_run.append((idx, benchmark, params))
 
-        # First pass: classify skip/fail immediately; defer would-be-passes to a
-        # confirmation run so intrinsically-flaky benchmarks (matched once by
-        # luck) are demoted to fail-to-fail instead of becoming pass-to-fail.
-        confirm = []
         for idx, tr in iter_task_results(
             Path(benchmark_dir), None, runner.seed, runner.timeout, to_run, workers
         ):
@@ -1232,24 +1193,6 @@ class SnapshotCLI:
                 entries[test_id] = "skip"
                 skipped += 1
             elif comparison.match:
-                benchmark, params = task_by_idx[idx]
-                confirm.append((idx, benchmark, params))
-            else:
-                entries[test_id] = "fail"
-                failed += 1
-
-        # Second pass: re-run only the would-be-passes; keep pass only if it
-        # reproduces the snapshot again.
-        for idx, tr in iter_task_results(
-            Path(benchmark_dir), None, runner.seed, runner.timeout, confirm, workers
-        ):
-            test_id, expected_value = expected_by_idx[idx]
-            if not tr.ok:
-                entries[test_id] = "fail"
-                failed += 1
-                continue
-            comparison = comparator.compare(tr.serialized_value, expected_value)
-            if comparison.match and not comparison.skipped:
                 entries[test_id] = "pass"
                 passed += 1
             else:
