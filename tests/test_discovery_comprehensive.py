@@ -435,3 +435,48 @@ class MyBenchmark:
         assert benchmark.has_setup is True
         assert benchmark.params is not None
         assert benchmark.param_names == ["x"]
+
+
+class TestInheritedClassAttributes:
+    """A benchmark class can take params, param_names and setup from a base class in the same file."""
+
+    SOURCE = """
+class GridBenchmark:
+    param_names = ['resolution']
+    params = [['480km', '120km']]
+
+    def setup(self, resolution):
+        self.size = {'480km': 3, '120km': 5}[resolution]
+
+
+class Gradient(GridBenchmark):
+    def time_gradient(self, resolution):
+        return list(range(self.size))
+
+
+class Override(GridBenchmark):
+    params = [['10km']]
+
+    def time_override(self, resolution):
+        return resolution
+"""
+
+    def test_inherited_attributes(self, temp_benchmark_dir, discovery):
+        (temp_benchmark_dir / "inherit.py").write_text(self.SOURCE)
+        found = {b.name: b for b in discovery.discover_all()}
+        grad = found["time_gradient"]
+        assert grad.params == [["480km", "120km"]]
+        assert grad.param_names == ["resolution"]
+        assert grad.has_setup and grad.setup_method == "setup"
+        assert found["time_override"].params == [["10km"]]
+
+    def test_inherited_setup_runs(self, temp_benchmark_dir):
+        from snapshot_tool.runner import BenchmarkRunner
+
+        (temp_benchmark_dir / "inherit.py").write_text(self.SOURCE)
+        runner = BenchmarkRunner(temp_benchmark_dir)
+        grad = next(b for b in runner.discovery.discover_all() if b.name == "time_gradient")
+        values = [
+            runner.run_benchmark(grad, p).return_value for p in runner.get_param_combinations(grad)
+        ]
+        assert values == [[0, 1, 2], [0, 1, 2, 3, 4]]
