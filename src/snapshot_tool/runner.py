@@ -12,7 +12,9 @@ import importlib.util
 import logging
 import os
 import pickle
+import signal
 import sys
+import threading
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -26,6 +28,10 @@ from .rng_patcher import RNGPatcher
 from .tracer import ExecutionTracer, TraceResult
 
 logger = logging.getLogger(__name__)
+
+
+class BenchmarkTimeout(BaseException):
+    """Raised inside a benchmark by the timer; a BaseException, so the benchmark's own ``except Exception`` cannot hide it."""
 
 
 class BenchmarkRunner:
@@ -111,8 +117,10 @@ class BenchmarkRunner:
         if self.timeout is None:
             # No timeout configured, run directly
             return self._run_benchmark_internal(benchmark, parameters)
+        if hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread():
+            return self._run_with_alarm(benchmark, parameters)
 
-        # Use ThreadPoolExecutor to run with timeout
+        # Off the main thread no signal can interrupt the benchmark: the wait ends, the benchmark keeps running
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(self._run_benchmark_internal, benchmark, parameters)
         try:
@@ -144,6 +152,42 @@ class BenchmarkRunner:
                 success=False,
                 error=e,
             )
+
+    def _run_with_alarm(
+        self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
+    ) -> Optional[TraceResult]:
+        """Run the benchmark in this thread and stop it with SIGALRM when the timeout passes."""
+
+        def fire(_signum, _frame):
+            raise BenchmarkTimeout()
+
+        # imports outside the timer: an import stopped halfway leaves the module broken for every later benchmark
+        try:
+            self._reset_random_state()
+            self._load_module(benchmark.module_path)
+        except Exception:
+            pass
+        previous = signal.signal(signal.SIGALRM, fire)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, self.timeout)
+            try:
+                result = self._run_benchmark_internal(benchmark, parameters)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            return result
+        except BenchmarkTimeout:
+            sys.settrace(None)
+            logger.warning(f"Benchmark {benchmark.name} stopped after {self.timeout} seconds")
+            return TraceResult(
+                return_value=None,
+                function_name=benchmark.name,
+                module_name=benchmark.module_path,
+                depth=0,
+                success=False,
+                error=TimeoutError(f"Benchmark execution exceeded {self.timeout} seconds"),
+            )
+        finally:
+            signal.signal(signal.SIGALRM, previous)
 
     def run_benchmark(
         self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
