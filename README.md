@@ -1,188 +1,57 @@
-# Snapshot Testing Tool for ASV Benchmarks
+# snapshot-tool
 
-A tool for capturing and comparing function outputs from ASV benchmarks to verify correctness after optimizations.
-
-## Overview
-
-This tool integrates with ASV (airspeed-velocity) benchmarks to:
-- Capture function return values before optimization
-- Compare outputs after optimization to ensure correctness
-- Use execution tracing to capture the deepest function call's return value
-- Support both function-level and class-based parameterized benchmarks
+`snapshot-tool` checks that [ASV](https://github.com/airspeed-velocity/asv) benchmarks still give the same results after a code change. It runs each benchmark, captures a return value, stores it, and compares it on a later run with numerical tolerance. ASV measures speed; `snapshot-tool` checks correctness.
 
 ## Installation
 
-### Using uv (recommended)
-
 ```bash
-# Install with uv
-uv pip install -e .
-
-# Or install directly from repository
 uv pip install git+https://github.com/formula-code/snapshot-tester.git
-```
-
-### Using pip
-
-```bash
-# Install in development mode
-pip install -e .
-
-# Or install directly
+# or
 pip install git+https://github.com/formula-code/snapshot-tester.git
 ```
 
+For development:
+
+```bash
+git clone https://github.com/formula-code/snapshot-tester.git
+cd snapshot-tester
+uv sync --group dev && uv pip install -e .
+```
+
+The tool has no required runtime dependencies. It supports Python 3.8 to 3.13.
+
 ## Usage
 
-### Command Line Interface
-
-After installation, use the `snapshot-tool` command:
-
-#### List Benchmarks
 ```bash
-snapshot-tool list <benchmark_dir> [--filter PATTERN]
+snapshot-tool list     path/to/benchmarks          # show discovered benchmarks
+snapshot-tool capture  path/to/benchmarks          # store reference outputs
+snapshot-tool baseline path/to/benchmarks          # optional: record pass/fail/skip per test
+snapshot-tool verify   path/to/benchmarks          # compare against the stored outputs
 ```
 
-Example:
-```bash
-snapshot-tool list examples/astropy-benchmarks/benchmarks --filter time_angle
-```
+`capture`, `baseline` and `verify` accept `--filter REGEX`, `--snapshot-dir DIR`, `--timeout SEC` and `--parallel [--workers N]`. `baseline` and `verify` also accept `--tolerance RTOL ATOL`. `verify` writes `summary.json` and exits with code 1 when a test fails. When `baseline.json` exists, the summary also holds the baseline-to-verify transition counts, for example `pass-to-fail`.
 
-#### Capture Snapshots
-```bash
-snapshot-tool capture <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR]
-```
+Snapshots go to `.snapshots/snapshots.db`, a SQLite database of gzipped pickles that are deduplicated by sha256.
 
-This captures baseline snapshots of all benchmark outputs.
+## Documentation
 
-#### Verify Against Snapshots
-```bash
-snapshot-tool verify <benchmark_dir> [--filter PATTERN] [--snapshot-dir DIR] [--tolerance RTOL ATOL]
-```
+The full documentation is in [`docs/`](docs/index.md) and builds with MkDocs (`mkdocs.yml`):
 
-This runs benchmarks and compares outputs against stored snapshots.
-
-#### Configuration
-```bash
-snapshot-tool config --init    # Create default config
-snapshot-tool config --show    # Show current config
-```
-
-#### Running with uv
-
-You can also run the tool without installation using `uv run`:
-
-```bash
-uv run snapshot-tool list <benchmark_dir>
-uv run snapshot-tool capture <benchmark_dir>
-uv run snapshot-tool verify <benchmark_dir>
-```
-
-### Programmatic Usage
-
-```python
-from snapshot_tool import BenchmarkDiscovery, BenchmarkRunner, SnapshotManager, Comparator
-
-# Discover benchmarks
-discovery = BenchmarkDiscovery("benchmarks/")
-benchmarks = discovery.discover_all()
-
-# Run benchmarks with tracing
-runner = BenchmarkRunner("benchmarks/")
-result = runner.run_benchmark(benchmark)
-
-# Store snapshots
-storage = SnapshotManager(".snapshots/")
-storage.store_snapshot(
-    benchmark_name="my_benchmark",
-    module_path="my_module", 
-    parameters=(),
-    param_names=None,
-    return_value=result.return_value
-)
-
-# Compare outputs
-comparator = Comparator()
-comparison = comparator.compare(actual_value, expected_value)
-```
-
-## Architecture
-
-### Core Components
-
-1. **BenchmarkDiscovery**: Parses ASV benchmark files to find benchmark classes and functions
-2. **ExecutionTracer**: Uses `sys.settrace()` to capture the deepest function call's return value
-3. **BenchmarkRunner**: Executes benchmarks with tracing enabled
-4. **SnapshotManager**: Stores and retrieves snapshots using pickle files
-5. **Comparator**: Compares outputs using numpy.allclose for numerical data
-6. **CLI**: Command-line interface for easy usage
-
-### Key Features
-
-- **Hierarchical Discovery**: Supports nested benchmark directories
-- **Parameter Handling**: Automatically generates parameter combinations for parameterized benchmarks
-- **Global Variables**: Handles benchmarks that use global variables
-- **Setup Methods**: Supports class-based benchmarks with setup methods
-- **Flexible Comparison**: Uses numpy.allclose for numerical data with configurable tolerances
-- **Metadata Tracking**: Stores git commit, timestamp, and other metadata with snapshots
-
-## Configuration
-
-Create a `snapshot_config.json` file to customize behavior:
-
-```json
-{
-  "benchmark_dir": "benchmarks/",
-  "snapshot_dir": ".snapshots/",
-  "tolerance": {
-    "rtol": 1e-5,
-    "atol": 1e-8,
-    "equal_nan": false
-  },
-  "exclude_benchmarks": [],
-  "trace_depth_limit": 100,
-  "verbose": false,
-  "quiet": false
-}
-```
-
-## Example Workflow
-
-1. **Initial Setup**: Capture baseline snapshots
-   ```bash
-   python snapshot_test.py capture benchmarks/
-   ```
-
-2. **Make Optimizations**: Modify your code to improve performance
-
-3. **Verify Correctness**: Compare outputs against snapshots
-   ```bash
-   python snapshot_test.py verify benchmarks/
-   ```
-
-4. **Review Results**: The tool will report which benchmarks passed/failed
+- [CLI reference](docs/guide/cli.md)
+- [Python API quickstart](docs/getting-started/quickstart.md)
+- [Configuration](docs/guide/configuration.md)
+- [Baseline and verify](docs/guide/baseline-and-verify.md)
+- [Discovery](docs/guide/discovery.md), [Tracing](docs/guide/tracing.md), [Comparison](docs/guide/comparison.md), [Determinism](docs/guide/determinism.md), [Storage](docs/guide/storage.md)
 
 ## Limitations
 
-- Requires the benchmarked project to be importable
-- Some benchmarks may not return meaningful values to capture
-- Execution tracing adds overhead to benchmark runs
-- Pickle format may not be compatible across Python versions
+- The benchmarked project must be importable.
+- Some benchmarks do not return a value that can be captured.
+- Tracing makes benchmarks run slower.
+- Pickled snapshots can fail to load on a different Python or library version. Capture and verify with the same environment.
 
-## Testing
-
-Run the test script to verify the tool works:
+## Tests
 
 ```bash
-python test_snapshot_tool.py
+uv run pytest -v --ignore=tests/test_repos/ --ignore=tests/test_cli_roundtrip.py
 ```
-
-This will test discovery, storage, comparison, and basic benchmark execution.
-
-## Contributing
-
-The tool is designed to be extensible. Key areas for enhancement:
-- Support for more data types in comparison
-- Integration with CI/CD systems
-- Web-based reporting interface
-- Support for distributed snapshot storage
