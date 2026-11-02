@@ -84,7 +84,7 @@ class TestNumpyArrayComparison:
         arr2 = np.array([1, 2, 3], dtype=np.int64)
 
         result = comparator.compare(arr1, arr2)
-        # Implementation currently returns False for different dtypes (strict_dtypes check)
+        # strict_types makes a dtype mismatch a failure
         assert result.match is False
 
     def test_nan_handling(self, comparator):
