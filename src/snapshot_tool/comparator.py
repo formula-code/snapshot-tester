@@ -1,9 +1,4 @@
-"""
-Comparison engine for snapshot testing.
-
-This module compares captured outputs with stored snapshots using
-pure Python numerical comparisons with tolerances.
-"""
+"""Compare captured outputs with stored snapshots, with numerical tolerances in pure Python."""
 
 from __future__ import annotations
 
@@ -11,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-# Optional numpy import - only used for type detection when benchmarks return numpy arrays
+# numpy is optional; it is used only to detect numpy types
 try:
     import numpy as np
 
@@ -25,7 +20,6 @@ def _is_numpy_array(obj: Any) -> bool:
     """Check if object is a numpy array without requiring numpy import."""
     if HAS_NUMPY and np is not None:
         return isinstance(obj, np.ndarray)
-    # Fallback: check by module and type name
     obj_type = type(obj)
     return obj_type.__module__ == "numpy" and obj_type.__name__ == "ndarray"
 
@@ -46,7 +40,6 @@ def _is_numpy_scalar(obj: Any) -> bool:
     """Check if object is a numpy scalar without requiring numpy import."""
     if HAS_NUMPY and np is not None:
         return isinstance(obj, np.number)
-    # Fallback: check by module
     obj_type = type(obj)
     return obj_type.__module__ == "numpy"
 
@@ -55,7 +48,6 @@ def _py_isclose(
     a: float, b: float, rtol: float = 1e-5, atol: float = 1e-8, equal_nan: bool = False
 ) -> bool:
     """Pure Python implementation of numpy.isclose for scalars."""
-    # Handle NaN and infinity values
     try:
         a_float = float(a)
         b_float = float(b)
@@ -66,7 +58,6 @@ def _py_isclose(
     except (TypeError, ValueError):
         return False
 
-    # Handle NaN
     if equal_nan and a_is_nan and b_is_nan:
         return True
     if a_is_nan or b_is_nan:
@@ -76,7 +67,7 @@ def _py_isclose(
     if a_is_inf or b_is_inf:
         return a_float == b_float
 
-    # Standard tolerance check: |a - b| <= atol + rtol * |b|
+    # |a - b| <= atol + rtol * |b|, as in numpy.isclose
     return abs(a_float - b_float) <= atol + rtol * abs(b_float)
 
 
@@ -85,7 +76,7 @@ class ComparisonResult:
     """Result of comparing two values."""
 
     match: bool
-    skipped: bool = False  # True if comparison was skipped (e.g., generators, unpicklable values)
+    skipped: bool = False  # placeholder value (generator, callable, unpicklable)
     tolerance_used: Optional[dict[str, float]] = None
     error_message: Optional[str] = None
     details: Optional[dict[str, Any]] = None
@@ -97,14 +88,11 @@ class ComparisonConfig:
 
     rtol: float = 1e-5
     atol: float = 1e-8
-    # Snapshot semantics: a deterministic NaN at the same position on both the
-    # captured and the re-run output means the result did NOT change, so it
-    # should compare equal. (numpy.isclose defaults this False; for snapshot
-    # regression testing True is the correct default.)
+    # A NaN that appears again at the same position is not a change (numpy.isclose uses False)
     equal_nan: bool = True
     strict_types: bool = True
     strict_shapes: bool = True
-    ignore_order: bool = False
+    ignore_order: bool = False  # not used by any strategy
 
 
 class Comparator:
@@ -116,7 +104,6 @@ class Comparator:
     def compare(self, actual: Any, expected: Any) -> ComparisonResult:
         """Compare actual value with expected value."""
         try:
-            # Handle serialized generators - skip comparison
             if isinstance(expected, dict) and expected.get("__generator__"):
                 return ComparisonResult(
                     match=True,
@@ -124,7 +111,6 @@ class Comparator:
                     details="Skipped comparison for generator (cannot be pickled)",
                 )
 
-            # Handle serialized callables (functions/closures) - skip comparison
             if isinstance(expected, dict) and expected.get("__callable__"):
                 return ComparisonResult(
                     match=True,
@@ -132,7 +118,6 @@ class Comparator:
                     details="Skipped comparison for callable (cannot be pickled reliably)",
                 )
 
-            # Handle unpicklable placeholder
             if isinstance(expected, dict) and expected.get("__unpicklable__"):
                 return ComparisonResult(
                     match=True,
@@ -140,11 +125,9 @@ class Comparator:
                     details="Skipped comparison for unpicklable value (stored as placeholder)",
                 )
 
-            # Handle serialized class instances
             if isinstance(expected, dict) and expected.get("__class_instance__"):
                 return self._compare_class_instance(actual, expected)
 
-            # Handle None values
             if actual is None and expected is None:
                 return ComparisonResult(match=True)
             elif actual is None or expected is None:
@@ -153,9 +136,8 @@ class Comparator:
                     error_message=f"One value is None: actual={actual}, expected={expected}",
                 )
 
-            # Try different comparison strategies
-            # Note: _compare_objects must come before _compare_sequences because some objects
-            # like SkyCoord have sequence-like methods but should use their __eq__ method
+            # _compare_objects comes before _compare_sequences: SkyCoord and similar types
+            # look like sequences but must use their own __eq__
             strategies = [
                 self._compare_numpy_arrays,
                 self._compare_scalars,
@@ -171,7 +153,6 @@ class Comparator:
                 if result is not None:
                     return result
 
-            # If no strategy worked, use fallback
             return ComparisonResult(
                 match=False, error_message="No comparison strategy could handle these types"
             )
@@ -183,13 +164,12 @@ class Comparator:
 
     def _compare_class_instance(self, actual: Any, expected: dict[str, Any]) -> ComparisonResult:
         """Compare a class instance with a serialized class instance."""
-        # Check if actual is also a class instance
         if not hasattr(actual, "__class__"):
             return ComparisonResult(
                 match=False, error_message=f"Expected class instance but got {type(actual)}"
             )
 
-        # Check class name and module
+        # Only the class name is compared, not the module
         expected_class = expected["__class_name__"]
         actual_class = actual.__class__.__name__
 
@@ -199,11 +179,9 @@ class Comparator:
                 error_message=f"Class name mismatch: expected {expected_class}, got {actual_class}",
             )
 
-        # Compare the __dict__ contents
         expected_dict = expected["__dict__"]
         actual_dict = actual.__dict__
 
-        # Compare each attribute
         for key, expected_value in expected_dict.items():
             if key not in actual_dict:
                 return ComparisonResult(
@@ -218,7 +196,6 @@ class Comparator:
                     error_message=f"Attribute '{key}' mismatch: {attr_comparison.error_message}",
                 )
 
-        # Check for extra attributes in actual
         for key in actual_dict:
             if key not in expected_dict:
                 return ComparisonResult(
@@ -229,24 +206,20 @@ class Comparator:
 
     def _compare_numpy_arrays(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare numpy arrays using pure Python iteration."""
-        # Check if both are numpy arrays
         if not (_is_numpy_array(actual) and _is_numpy_array(expected)):
             return None
 
-        # Get shape and dtype info
         actual_shape = getattr(actual, "shape", None)
         expected_shape = getattr(expected, "shape", None)
         actual_dtype = getattr(actual, "dtype", None)
         expected_dtype = getattr(expected, "dtype", None)
 
-        # Check shapes if strict_shapes is enabled
         if self.config.strict_shapes and actual_shape != expected_shape:
             return ComparisonResult(
                 match=False,
                 error_message=f"Array shapes differ: {actual_shape} vs {expected_shape}",
             )
 
-        # Check dtypes if strict_types is enabled
         if self.config.strict_types and actual_dtype != expected_dtype:
             return ComparisonResult(
                 match=False,
@@ -259,29 +232,23 @@ class Comparator:
         if actual_dtype == object or expected_dtype == object:  # noqa: E721
             return self._compare_object_arrays(actual, expected)
 
-        # Compare numeric arrays element-wise using pure Python
         try:
-            # Flatten arrays to iterate through all elements
             actual_flat = actual.flatten()
             expected_flat = expected.flatten()
 
-            # Track differences for statistics
             differences = []
             all_close = True
 
             for a_val, e_val in zip(actual_flat, expected_flat):
-                # Convert to Python float for comparison
                 try:
                     a_float = float(a_val)
                     e_float = float(e_val)
                 except (TypeError, ValueError):
-                    # Non-numeric value, fall back to equality
                     if a_val != e_val:
                         all_close = False
                         break
                     continue
 
-                # Use pure Python isclose
                 if not _py_isclose(
                     a_float, e_float, self.config.rtol, self.config.atol, self.config.equal_nan
                 ):
@@ -295,7 +262,6 @@ class Comparator:
             }
 
             if not all_close:
-                # Calculate statistics
                 max_diff = max(differences) if differences else 0
                 mean_diff = sum(differences) / len(differences) if differences else 0
 
@@ -320,11 +286,9 @@ class Comparator:
 
     def _compare_scalars(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare scalar values using pure Python."""
-        # Check if both are numeric scalars
         if not (self._is_numeric_scalar(actual) and self._is_numeric_scalar(expected)):
             return None
 
-        # Use pure Python isclose for comparison
         try:
             match = _py_isclose(
                 float(actual),
@@ -357,11 +321,8 @@ class Comparator:
     def _compare_pandas(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Compare pandas DataFrame / Series with tolerance.
 
-        pandas objects reach here before _compare_objects, which would do
-        ``bool(actual == expected)`` and raise "truth value is ambiguous".
-        We reduce to the underlying ndarray and reuse the numpy element-wise
-        tolerance path so deterministic benchmarks (RNG is patched) actually
-        pass instead of being spurious fail-to-fail.
+        Runs before _compare_objects, where ``bool(actual == expected)`` raises for pandas.
+        Both sides are converted with to_numpy() and compared as arrays.
         """
         a_df, a_sr = _is_pandas_dataframe(actual), _is_pandas_series(actual)
         e_df, e_sr = _is_pandas_dataframe(expected), _is_pandas_series(expected)
@@ -392,14 +353,12 @@ class Comparator:
         if not (self._is_sequence(actual) and self._is_sequence(expected)):
             return None
 
-        # Check lengths
         if len(actual) != len(expected):
             return ComparisonResult(
                 match=False,
                 error_message=f"Sequence lengths differ: {len(actual)} vs {len(expected)}",
             )
 
-        # Compare elements
         mismatches = []
         for i, (a, e) in enumerate(zip(actual, expected)):
             result = self.compare(a, e)
@@ -410,7 +369,7 @@ class Comparator:
             return ComparisonResult(
                 match=False,
                 error_message=f"Sequence elements differ at indices: {[i for i, _ in mismatches[:5]]}",
-                details={"mismatches": mismatches[:10]},  # Limit details
+                details={"mismatches": mismatches[:10]},
             )
         else:
             return ComparisonResult(match=True)
@@ -420,7 +379,6 @@ class Comparator:
         if not (isinstance(actual, dict) and isinstance(expected, dict)):
             return None
 
-        # Check keys
         actual_keys = set(actual.keys())
         expected_keys = set(expected.keys())
 
@@ -431,7 +389,6 @@ class Comparator:
                 match=False, error_message=f"Dict keys differ: missing={missing}, extra={extra}"
             )
 
-        # Compare values
         mismatches = []
         for key in actual_keys:
             result = self.compare(actual[key], expected[key])
@@ -448,23 +405,20 @@ class Comparator:
             return ComparisonResult(match=True)
 
     def _compare_objects(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
-        """Compare objects with __eq__ method."""
-        # Skip built-in container types - let specialized comparators handle them
+        """Compare any value that is not a list, tuple or dict, using its custom __eq__."""
         if isinstance(actual, (list, tuple, dict)):
             return None
 
-        # Check if both objects have __eq__ defined (not just inherited from object)
         actual_type = type(actual)
         expected_type = type(expected)
 
-        # Check if types match
         if actual_type != expected_type:
             return ComparisonResult(
                 match=False,
                 error_message=f"Type mismatch: {actual_type.__name__} vs {expected_type.__name__}",
             )
 
-        # Check if __eq__ is properly implemented (not just the default object.__eq__)
+        # object.__eq__ does not count as a custom __eq__
         has_custom_eq = False
         for cls in actual_type.__mro__:
             if "__eq__" in cls.__dict__:
@@ -472,7 +426,7 @@ class Comparator:
                 break
 
         if not has_custom_eq:
-            # No custom __eq__, skip comparison and log
+            # Counts as a match; details records the skip
             return ComparisonResult(
                 match=True,
                 details={
@@ -485,7 +439,6 @@ class Comparator:
 
         try:
             match = actual == expected
-            # Check if __eq__ returned NotImplemented
             if match is NotImplemented:
                 return ComparisonResult(
                     match=True,
@@ -497,17 +450,13 @@ class Comparator:
                     error_message=f"Skipped: __eq__ not implemented for {actual_type.__name__}",
                 )
 
-            # Handle cases where __eq__ returns an array (e.g., SkyCoord, pandas Series)
+            # __eq__ can return an array (e.g. SkyCoord) or a list of arrays
             if _is_numpy_array(match):
-                # Call .all() method on the array if available
                 if hasattr(match, "all"):
                     match = bool(match.all())
                 else:
-                    # Fallback: iterate and check all elements
                     match = all(bool(x) for x in match.flatten())
-            # Handle cases where __eq__ returns a list/tuple of arrays (e.g., lists of numpy arrays)
             elif isinstance(match, (list, tuple)) and len(match) > 0:
-                # Check if it contains arrays (use len() to avoid evaluating the list as boolean)
                 if _is_numpy_array(match[0]):
                     match = all(
                         (arr.all() if hasattr(arr, "all") else bool(arr))
@@ -530,7 +479,6 @@ class Comparator:
     def _compare_fallback(self, actual: Any, expected: Any) -> Optional[ComparisonResult]:
         """Fallback comparison using == operator."""
         try:
-            # Check type consistency (strict: exact type identity, not isinstance)
             if type(actual) is not type(expected):
                 return ComparisonResult(
                     match=False,
@@ -539,7 +487,6 @@ class Comparator:
 
             match = actual == expected
 
-            # If comparison returned NotImplemented, skip
             if match is NotImplemented:
                 return ComparisonResult(
                     match=True,
@@ -556,7 +503,7 @@ class Comparator:
                 error_message=None if match else f"Values not equal: {actual} vs {expected}",
             )
         except Exception as e:
-            # If comparison fails, skip with warning
+            # Counts as a match; details records the skip
             return ComparisonResult(
                 match=True,
                 details={
@@ -569,18 +516,14 @@ class Comparator:
 
     def _compare_object_arrays(self, actual: Any, expected: Any) -> ComparisonResult:
         """Compare numpy object arrays element-wise."""
-        # Flatten arrays for easier comparison
         actual_flat = actual.flatten()
         expected_flat = expected.flatten()
 
-        # Compare each element
         mismatches = []
         for i, (a, e) in enumerate(zip(actual_flat, expected_flat)):
-            # Use the compare method recursively for each element
             result = self.compare(a, e)
             if not result.match:
                 mismatches.append((i, result.error_message))
-                # Limit the number of mismatches we track for performance
                 if len(mismatches) >= 10:
                     break
 
@@ -598,12 +541,9 @@ class Comparator:
 
     def _is_numeric_scalar(self, value: Any) -> bool:
         """Check if value is a numeric scalar."""
-        # Check Python built-in numeric types
         if isinstance(value, (int, float)):
             return True
-        # Check numpy scalar types if available
         if _is_numpy_scalar(value):
-            # Check if it's actually a scalar (not an array)
             return not hasattr(value, "shape") or value.shape == ()
         return False
 

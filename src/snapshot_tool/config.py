@@ -1,9 +1,4 @@
-"""
-Configuration management for snapshot testing.
-
-This module handles loading and managing configuration settings
-for the snapshot testing tool.
-"""
+"""Load and save the snapshot_config.json settings."""
 
 from __future__ import annotations
 
@@ -20,21 +15,15 @@ logger = logging.getLogger(__name__)
 class SnapshotConfig:
     """Configuration for snapshot testing."""
 
-    # Directories
-    benchmark_dir: str = "benchmarks/"
+    benchmark_dir: str = "benchmarks/"  # not used by the CLI
     snapshot_dir: str = ".snapshots/"
-    project_dir: Optional[str] = None
+    project_dir: Optional[str] = None  # not used by the CLI
 
-    # Comparison settings
     tolerance: dict[str, float] = None
-
-    # Filtering
+    # Exact benchmark names, or prefixes ending in "*"
     exclude_benchmarks: list = None
+    trace_depth_limit: int = 100  # not used by the CLI
 
-    # Tracing settings
-    trace_depth_limit: int = 100
-
-    # Output settings
     verbose: bool = False
     quiet: bool = False
 
@@ -90,7 +79,7 @@ class SnapshotConfig:
         return None
 
     def should_exclude_benchmark(self, benchmark_name: str) -> bool:
-        """Check if a benchmark should be excluded."""
+        """Return True if the name matches an exclude_benchmarks entry."""
         for pattern in self.exclude_benchmarks:
             if pattern.endswith("*"):
                 prefix = pattern[:-1]
