@@ -14,7 +14,7 @@ A function or method is a benchmark if its name starts with one of the standard 
 | `peakmem_` | Peak memory consumption |
 | `track_` | A user-defined metric |
 
-`snapshot-tool` discovers all five — it doesn't care about ASV's measurement type, only that the function/method exists and is callable. What `snapshot-tool` records is the **return value** captured by the [tracer](tracing.md), not the timing/memory metric.
+`snapshot-tool` discovers all five. The measurement type does not matter; only the name prefix does. What `snapshot-tool` records is the **return value** captured by the [tracer](tracing.md), not the timing/memory metric.
 
 ## What gets emitted
 
@@ -73,21 +73,23 @@ For each method in the class, the emitted `BenchmarkInfo` carries:
 
 ### Runtime-evaluated params
 
-ASV allows `params` to be any Python expression — a generator, a comprehension, a function call, a module-level constant. `BenchmarkDiscovery` can only statically extract **literal** values: `ast.Constant`, lists/tuples of constants, and nested combinations of those. Anything else is flagged:
+ASV allows `params` to be any Python expression. `BenchmarkDiscovery` reads `params` only when it is a list or tuple literal. It extracts **literal** elements statically: `ast.Constant`, and lists/tuples of constants. If the literal holds a non-literal element, discovery sets `needs_runtime_eval=True` and leaves `params=None`:
 
 ```python
 class TimeFoo:
-    params = [n for n in range(10)]       # ← comprehension, not a literal list
-    # or
-    params = list(SOMETHING)              # ← call, not a literal list
+    params = [SIZES, ["a", "b"]]          # ← SIZES is a name: runtime evaluation
+    params = [list(range(3)), ["a"]]      # ← call inside the list: runtime evaluation
 ```
 
-When `BenchmarkDiscovery` sees a non-literal expression in `params`, it sets `needs_runtime_eval=True` and leaves `params=None`. The runner then evaluates the class's `params` attribute at runtime (after `_load_module`) and back-fills the field before generating combinations.
+The runner then reads the class's `params` attribute from the imported module and fills in the field before it makes the combinations.
+
+!!! warning
+    A `params` value that is not a list or tuple literal, such as `params = [n for n in range(10)]` or `params = list(SIZES)`, is not read at all. Discovery leaves `params=None` and `needs_runtime_eval=False`, so the benchmark runs without parameters.
 
 ## What discovery skips
 
 - `__init__.py` — never parsed.
-- Files that fail to parse — a warning is logged via `logger.warning(...)`; discovery continues.
+- Files that fail to parse — an error is logged and discovery continues.
 - Imports — never followed. If `benchmarks/foo.py` imports from `benchmarks/bar.py`, both are scanned independently as files.
 - Inheritance — a class that inherits benchmark methods from a parent class will only have its **own** `time_*` methods discovered. ASV's class-based benchmark inheritance is not modeled.
 
@@ -109,9 +111,9 @@ geom_benchmarks = discovery.get_benchmarks_by_module("geometry.union")
 combinations = discovery.generate_parameter_combinations(b)
 ```
 
-Note that `generate_parameter_combinations` on a benchmark with `needs_runtime_eval=True` returns the placeholder `[("<runtime_eval>",)]` — use `BenchmarkRunner.get_param_combinations(b)` instead, which loads the module and back-fills `params` first.
+`generate_parameter_combinations` does not import anything. For a benchmark with `needs_runtime_eval=True` it returns `[()]`, because `params` is `None`. Use `BenchmarkRunner.get_param_combinations(b)` instead; it loads the module and fills in `params` first.
 
 ## Next steps
 
 - [Tracing](tracing.md) — How `sys.settrace` decides which return value to capture.
-- [CLI guide → `list`](cli.md#list) — The user-facing wrapper around `discover_all()`.
+- [CLI guide → `list`](cli.md#list) — The CLI command that calls `discover_all()`.

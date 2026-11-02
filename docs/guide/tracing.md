@@ -1,6 +1,6 @@
 # Tracing
 
-ASV benchmarks usually don't return anything — they exist to be timed, not to produce output. `snapshot-tool` extracts a return value anyway by installing a `sys.settrace` callback during execution and capturing the **shallowest meaningful user-code return value**.
+ASV benchmarks usually do not return anything; they are timed, not checked. `snapshot-tool` gets a return value anyway. It rewrites the benchmark's last expression into a `return`, and it installs a `sys.settrace` callback that keeps the **shallowest meaningful user-code return value**.
 
 ## The problem
 
@@ -11,14 +11,14 @@ def time_compute(self, n):
     self.solver.run(n)
 ```
 
-There's nothing to compare here. The interesting value is what `self.solver.run(n)` returned internally — but we don't get to see it from the outside, because the function body discards it.
+There is nothing to compare here. The useful value is what `self.solver.run(n)` returned, but the function body discards it.
 
 Two mechanisms cooperate to capture it:
 
-1. **AST rewrite (preferred)** — Before execution, `BenchmarkRunner` re-parses the benchmark method's source. If the last statement is a bare expression (`self.solver.run(n)`), it rewrites it to `return self.solver.run(n)` and recompiles. This is the cheap path and works for the vast majority of ASV-style benchmarks. It's important because C/Cython-implemented internals are invisible to `sys.settrace`, so the AST rewrite is sometimes the **only** way to capture a value.
-2. **`sys.settrace` (fallback / supplement)** — While the benchmark runs, a per-frame trace callback records the return value of every traced call. The shallowest meaningful one — the one closest to the benchmark itself — wins.
+1. **AST rewrite** — Before execution, `BenchmarkRunner` parses the benchmark's source again. If the last statement is a bare expression (`self.solver.run(n)`), it rewrites it to `return self.solver.run(n)` and compiles it. This works for most ASV benchmarks. It is necessary because `sys.settrace` cannot see functions written in C or Cython, so the rewrite is sometimes the **only** way to capture a value. For a module-level function benchmark, the value that the rewritten function returns is used directly, without the tracer.
+2. **`sys.settrace`** — While a method benchmark runs, a per-frame trace callback records the return value of every traced call. The shallowest meaningful one wins. After the rewrite, that is usually the benchmark method itself.
 
-If both fail, the benchmark is still reported as `success=True` with `return_value=None`. The capture is silently empty; verify will read it back as `None == None` (a pass).
+If neither gives a value, the benchmark is still reported as `success=True` with `return_value=None`. The snapshot is empty, and verify reads it back as `None == None` (a pass).
 
 ## What "meaningful" means
 
@@ -33,7 +33,7 @@ If both fail, the benchmark is still reported as `success=True` with `return_val
     - **shapely** internals: `shapely.lib`, `shapely._`, `shapely.geos`, `shapely.geometry.base`.
 - The function isn't a dunder method (`__init__`, `__repr__`, `__eq__`, `__len__`, `__iter__`, ...) or a lambda / synthetic name (`<lambda>`, anything starting with `<`).
 
-The list of suppressed modules is intentionally broad — we want to trace **user benchmark code and the public surface of scientific libraries**, not their internal helpers. A `shapely.geometry.Polygon.union` call gets traced; the `shapely.lib.intersection` C-binding it calls does not.
+The list of excluded modules is broad on purpose: the tracer must see **user benchmark code and the public API of scientific libraries**, not their internal helpers. A `shapely.geometry.Polygon.union` call gets traced; the `shapely.lib.intersection` C-binding it calls does not.
 
 ## "Shallowest" vs "deepest"
 
@@ -46,10 +46,10 @@ if arg is not None and not self._is_meaningless_return(arg):
         self.deepest_call = TraceResult(...)
 ```
 
-In other words: every meaningful return value at a depth `<=` the current best replaces it. This biases capture toward the **first user-code call from the benchmark**, not the innermost.
+Every meaningful return value at a depth `<=` the current best replaces it. So the capture prefers the call **closest to the benchmark**, not the innermost one. Among calls at the same depth, the last one wins.
 
 !!! note
-    The field name and docstring say "deepest" but the comparator is `<=`, so what you actually get is the shallowest frame. This is intentional — naming hasn't been updated to match the behavior.
+    The attribute is named `deepest_call`, but because of the `<=` it holds the shallowest frame.
 
 ## What's "meaningless"
 
@@ -57,9 +57,9 @@ In other words: every meaningful return value at a depth `<=` the current best r
 
 - `None` — always skipped.
 - Empty containers (`len(value) == 0` if `__len__` exists).
-- Trivial scalar values (`0`, `0.0`, `""`) — but not `False` (booleans are always kept).
+- Zero scalars: `0`, `0.0`, and `False` (because `bool` is a subclass of `int`).
 
-Class instances are always kept, even if they're empty — they're typically the "real" return value. Numpy arrays, strings (non-empty), and non-zero numbers are always kept.
+Everything else is kept: non-zero numbers, `True`, non-empty strings, non-empty containers and arrays, and class instances without `__len__`.
 
 ## Lifecycle
 
@@ -72,9 +72,9 @@ finally:
     result = tracer.stop_tracing()  # sys.settrace(None); returns the captured TraceResult or None
 ```
 
-If `benchmark()` raises before any traced frame returns meaningfully, `result.success = False` and `result.error` is set. If `benchmark()` returns normally but nothing meaningful was traced (e.g., the whole call ran inside C code), `result` is `None`.
+If a traced frame raises an exception before a meaningful return value is recorded, the tracer records a result with `success = False` and `error` set. This also happens when the benchmark catches the exception. A later meaningful return at the same or a smaller depth replaces it. If nothing meaningful was traced (for example, all the work ran inside C code), `result` is `None`.
 
-`BenchmarkRunner` normalizes `None` to `TraceResult(success=True, return_value=None)` — it considers "no trace captured" a successful run with empty output, not a failure.
+`BenchmarkRunner` changes `None` to `TraceResult(success=True, return_value=None)`: a run with no captured value is a success with empty output, not a failure.
 
 ## `TraceResult`
 
@@ -89,11 +89,11 @@ class TraceResult:
     error: Optional[Exception] = None
 ```
 
-`function_name` and `module_name` are useful for debugging: they tell you exactly which function the snapshot is coming from. If a snapshot starts failing after a refactor that renames or relocates a helper, this is where you'll see it.
+`function_name` and `module_name` tell you which function the snapshot comes from. Use them to debug a snapshot that fails after a helper is renamed or moved.
 
 ## Overhead
 
-`sys.settrace` is meaningfully slow — every Python function call goes through your callback. `snapshot-tool` runs benchmarks under tracing only during `capture` / `verify` / `baseline`. The actual ASV timing job is unaffected; the snapshot harness is separate.
+`sys.settrace` is slow: every Python function call goes through the callback. `snapshot-tool` traces benchmarks only during `capture` / `verify` / `baseline`. ASV timing runs are separate and are not affected.
 
 ## Programmatic use
 

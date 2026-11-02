@@ -42,7 +42,7 @@ uv run ruff check src/ tests/
 bash customtest.sh   # runs against tests/test_repos/shapely_benchmarks
 ```
 
-## CLI surface
+## CLI commands
 
 Entry point: `snapshot-tool` (defined in `pyproject.toml` -> `snapshot_tool.cli:main`). Subcommands:
 

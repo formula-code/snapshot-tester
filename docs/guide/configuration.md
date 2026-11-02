@@ -1,8 +1,11 @@
 # Configuration
 
-`snapshot-tool` reads its configuration from `./snapshot_config.json` by default. The file is optional — every field has a sensible default — and is loaded by `ConfigManager` at CLI startup.
+`snapshot-tool` reads its configuration from `./snapshot_config.json` in the current directory. The file is optional; every field has a default. `ConfigManager` loads it when the CLI starts.
 
-Override the path with `--config PATH` (or `-c PATH`). Override individual fields with the CLI flags described in the [CLI guide](cli.md).
+!!! warning
+    The global `--config PATH` (`-c PATH`) flag is accepted but not used. The CLI always reads `./snapshot_config.json`. To use another file, run the tool from the directory that holds it, or load it with `ConfigManager(path)` from Python.
+
+Some fields can be overridden with the CLI flags described in the [CLI guide](cli.md).
 
 ## Initialize the file
 
@@ -29,7 +32,7 @@ writes a default `snapshot_config.json` with every field at its built-in default
 }
 ```
 
-To inspect what's currently active:
+To print the active configuration:
 
 ```bash
 snapshot-tool config --show
@@ -41,9 +44,9 @@ snapshot-tool config --show
 
 | Field | Default | What it does |
 |-------|---------|--------------|
-| `benchmark_dir` | `benchmarks/` | Default directory for `list` / `capture` / `verify` / `baseline` if not provided on the command line. **Currently informational** — the CLI requires `benchmark_dir` as a positional argument on every subcommand, so this is rarely used by itself. |
+| `benchmark_dir` | `benchmarks/` | Not used by the CLI. Every subcommand takes `benchmark_dir` as a required positional argument. |
 | `snapshot_dir` | `.snapshots/` | Where snapshots are written and read. Overridden by `--snapshot-dir`. |
-| `project_dir` | `null` | Optional override for the project root. By default `BenchmarkRunner` uses `benchmark_dir.parent` and inserts it onto `sys.path` so the benchmarked package can be imported. Set this when your project root isn't the parent of the benchmark directory. |
+| `project_dir` | `null` | Not used by the CLI. The CLI always puts `benchmark_dir.parent` on `sys.path`. To use another project root, pass `project_dir` to `BenchmarkRunner` from Python. |
 
 ### Comparison tolerance
 
@@ -51,11 +54,11 @@ snapshot-tool config --show
 |-------|---------|--------------|
 | `tolerance.rtol` | `1e-5` | Relative tolerance for numeric comparison. Overridden by the first value of `--tolerance RTOL ATOL`. |
 | `tolerance.atol` | `1e-8` | Absolute tolerance. Overridden by the second value of `--tolerance RTOL ATOL`. |
-| `tolerance.equal_nan` | `true` | When `true`, two NaN values at the same position compare equal (snapshot default — a deterministic NaN that reappears unchanged is not a regression). Set `false` for strict `numpy.isclose` semantics. No CLI override — set in the file. |
+| `tolerance.equal_nan` | `true` | When `true`, two NaN values at the same position compare equal: a NaN that appears again unchanged is not a regression. Set `false` for strict `numpy.isclose` semantics. There is no CLI flag. The file value is used only when `--tolerance` is not given; with `--tolerance`, `equal_nan` is `true`. |
 
 The comparison formula is `|a - b| <= atol + rtol * |b|`, matching `numpy.isclose` semantics. `b` is the *expected* (snapshot) value.
 
-See [Comparison](comparison.md) for the full dispatch and additional knobs (`strict_types`, `strict_shapes`) available when constructing a `ComparisonConfig` programmatically.
+See [Comparison](comparison.md) for the full dispatch and the other options (`strict_types`, `strict_shapes`). These are available only when you construct a `ComparisonConfig` in Python.
 
 ### Filtering
 
@@ -63,17 +66,13 @@ See [Comparison](comparison.md) for the full dispatch and additional knobs (`str
 |-------|---------|--------------|
 | `exclude_benchmarks` | `[]` | List of benchmark *names* (not full paths) to skip. Each entry is either an exact match or a prefix wildcard ending in `*`. Independent of `--filter`. |
 
-`should_exclude_benchmark` does a simple `==` or `startswith` check against the benchmark `name` only — it doesn't see the module path. To exclude by module, use the `--filter` regex on the command line instead.
+`should_exclude_benchmark` does an `==` or `startswith` check against the benchmark `name` only; it does not see the module path. To exclude by module, use the `--filter` regex on the command line.
 
-Examples:
+Example: skip the benchmark `time_flaky` (exact match), every benchmark whose name starts with `time_slow_`, and all `peakmem_` benchmarks:
 
 ```json
 {
-  "exclude_benchmarks": [
-    "time_flaky",        // exact match
-    "time_slow_*",       // prefix wildcard
-    "peakmem_*"          // skip all peakmem benchmarks
-  ]
+  "exclude_benchmarks": ["time_flaky", "time_slow_*", "peakmem_*"]
 }
 ```
 
@@ -81,39 +80,37 @@ Examples:
 
 | Field | Default | What it does |
 |-------|---------|--------------|
-| `trace_depth_limit` | `100` | Maximum call depth for the [tracer](tracing.md). The tracer stops recording new frames beyond this depth to avoid infinite-recursion blowups. The default is generous for typical benchmark code; lower it if you're seeing pathological recursion. |
-
-This field is read into the dataclass but not currently threaded through to `ExecutionTracer`'s constructor by the CLI — the tracer always uses its built-in `max_depth=100`. The two values agree by default; if you want a different depth, instantiate `ExecutionTracer(max_depth=N)` and use the [Python API](../getting-started/quickstart.md) directly.
+| `trace_depth_limit` | `100` | Not used by the CLI. The [tracer](tracing.md) always uses `ExecutionTracer(max_depth=100)` and stops tracing frames deeper than that. For another depth, construct `ExecutionTracer(max_depth=N)` with the [Python API](../getting-started/quickstart.md). |
 
 ### Output
 
 | Field | Default | What it does |
 |-------|---------|--------------|
-| `verbose` | `false` | Equivalent to `--verbose` / `-v`. Enables debug-level comparison detail and full tracebacks on errors. |
-| `quiet` | `false` | Equivalent to `--quiet` / `-q`. Suppresses per-benchmark `[PASS]` / `[SKIP]` lines (failures are always printed). |
+| `verbose` | `false` | Same as `--verbose` / `-v`. Prints a traceback when a command raises an error. Comparison details are logged at DEBUG level, which the default log setup does not show. |
+| `quiet` | `false` | Same as `--quiet` / `-q`. Hides most per-benchmark `[PASS]` / `[SKIP]` lines. Failures are always printed. |
 
-CLI flags take precedence — passing `-v` on the command line forces `verbose=True` for that invocation regardless of the file.
+`-v` and `-q` on the command line set the field to `true` for that run. They cannot set it to `false`.
 
 ## CLI flag precedence
 
-For every overlapping field, the precedence is:
+For every field that has a CLI flag, the order is:
 
 ```
-CLI flag  >  snapshot_config.json  >  built-in default
+CLI flag  >  ./snapshot_config.json  >  built-in default
 ```
 
-So a `verify` command like:
+So this `verify` command:
 
 ```bash
-snapshot-tool -v --config ./conf.json verify ./benchmarks \
+snapshot-tool -v verify ./benchmarks \
     --snapshot-dir ./snapshots --tolerance 1e-4 1e-6
 ```
 
 resolves to:
 
-- `snapshot_dir = "./snapshots"` (from `--snapshot-dir`, overriding `conf.json`).
+- `snapshot_dir = "./snapshots"` (from `--snapshot-dir`, which overrides the file).
 - `tolerance.rtol = 1e-4`, `tolerance.atol = 1e-6` (from `--tolerance`).
-- `tolerance.equal_nan = <value from conf.json or true>` (not overridable on the CLI).
+- `tolerance.equal_nan = true` (because `--tolerance` is given, the file value is not read).
 - `verbose = True` (from `-v`).
 
 ## Programmatic configuration

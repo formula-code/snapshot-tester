@@ -2,11 +2,11 @@
 
 This guide walks through `snapshot-tool`'s public API. Everything below is re-exported from the top-level `snapshot_tool` package.
 
-For day-to-day use the [CLI](../guide/cli.md) is enough — reach for the Python API when you need to embed snapshot testing inside a larger harness (e.g., a CI pre-flight, a notebook, or a custom comparison strategy).
+For daily use the [CLI](../guide/cli.md) is enough. Use the Python API to run snapshot testing inside a larger tool, for example a CI check, a notebook, or a custom comparison strategy.
 
 ## Discovering benchmarks
 
-`BenchmarkDiscovery` walks a directory tree and AST-parses every `*.py` file. It never imports the benchmark modules at discovery time — that's deferred to the runner.
+`BenchmarkDiscovery` walks a directory tree and AST-parses every `*.py` file. It does not import the benchmark modules; the runner does that.
 
 ```python
 from snapshot_tool import BenchmarkDiscovery
@@ -34,7 +34,7 @@ Each entry is a `BenchmarkInfo` dataclass with everything the runner needs:
 | `param_names` | Optional list of parameter names |
 | `has_setup` / `setup_method` | Whether the class has a `setup` method to call before each run |
 | `has_setup_cache` | Whether the class has a `setup_cache` method (called once per class) |
-| `needs_runtime_eval` | `True` if `params` contains a non-literal expression (a comprehension, call, etc.) that has to be evaluated at runtime |
+| `needs_runtime_eval` | `True` if `params` is a list or tuple literal that holds a non-literal element (a name, a call, etc.), so it must be read at runtime |
 
 ## Running a benchmark with tracing
 
@@ -66,11 +66,11 @@ for params in runner.get_param_combinations(benchmark):
     ...
 ```
 
-The runner wraps each call in a `ThreadPoolExecutor.submit(...).result(timeout=...)`. On timeout the future is cancelled and a `TraceResult` with `success=False` and `error=TimeoutError(...)` is returned — but the underlying thread keeps running, so persistent hangs can leak threads. Keep timeouts realistic.
+On timeout the runner returns a `TraceResult` with `success=False` and `error=TimeoutError(...)`. On the main thread a `SIGALRM` timer stops the benchmark. Off the main thread the runner waits on a `ThreadPoolExecutor` future, and the benchmark keeps running in its thread after the timeout.
 
 ## Storing and loading snapshots
 
-`SnapshotManager` writes captured values into a single SQLite database (`<snapshot_dir>/snapshots.db`) — pickled, gzipped, and deduplicated by sha256 — and emits a JSON metadata sidecar next to where the snapshot would have lived under the old per-file layout. `store_snapshot` returns the sidecar path:
+`SnapshotManager` writes captured values into one SQLite database (`<snapshot_dir>/snapshots.db`), pickled, gzipped, and deduplicated by sha256. It also writes a JSON metadata sidecar per snapshot under `<snapshot_dir>/<module>/<benchmark>/`. `store_snapshot` returns the sidecar path:
 
 ```python
 from snapshot_tool import SnapshotManager
@@ -106,7 +106,7 @@ See [Snapshot Storage](../guide/storage.md) for the full on-disk layout.
 
 ## Comparing outputs
 
-`Comparator` dispatches across numpy arrays, scalars, sequences, dicts, and custom classes — falling back to `==` and `NotImplemented`-aware skips for types it doesn't recognize. Numpy is optional; the comparator probes for it lazily.
+`Comparator` handles numpy arrays, scalars, pandas objects, sequences, dicts, and custom classes, and uses `==` for other types. Numpy is optional; the comparator uses it if it is installed.
 
 ```python
 from snapshot_tool import Comparator, ComparisonConfig
@@ -136,12 +136,14 @@ The strategy dispatch order is fixed:
 
 1. Serialized placeholders (`__generator__`, `__callable__`, `__unpicklable__`) → skip.
 2. Serialized class instance (`__class_instance__`) → compare `__dict__` recursively.
-3. Numpy arrays → shape/dtype check, then element-wise `isclose`.
-4. Numeric scalars → pure-Python `isclose`.
-5. Objects with a custom `__eq__` → use it (handles array-returning equality on `SkyCoord`, pandas `Series`, etc.).
-6. Sequences (list/tuple) → length + element-wise recursion.
-7. Dicts → key-set match + value recursion.
-8. Fallback `==` with `NotImplemented`-aware skip.
+3. `None` on either side → match only if both are `None`.
+4. Numpy arrays → shape/dtype check, then element-wise `isclose`.
+5. Numeric scalars → pure-Python `isclose`.
+6. pandas `DataFrame` / `Series` → `to_numpy()`, then the array comparison.
+7. Other objects (not list/tuple/dict) → type check, then their custom `__eq__` (handles array-returning equality such as `SkyCoord`).
+8. Sequences (list/tuple) → length + element-wise recursion.
+9. Dicts → key-set match + value recursion.
+10. Fallback `==`.
 
 See [Comparison](../guide/comparison.md) for the full dispatch logic.
 
@@ -203,11 +205,11 @@ from snapshot_tool import reset_all_rngs
 reset_all_rngs(seed=42)   # reseeds Python random, numpy, torch, tensorflow
 ```
 
-`reset_all_rngs` is the lightweight version of `RNGPatcher.patch_all()` — same seed, no state tracking. See [Determinism](../guide/determinism.md) for the full story.
+`reset_all_rngs` seeds the same RNGs as `RNGPatcher.patch_all()` without creating a patcher object. See [Determinism](../guide/determinism.md) for details.
 
 ## Next steps
 
 - [CLI](../guide/cli.md) — Reference for all six subcommands.
 - [Baseline & Verify](../guide/baseline-and-verify.md) — The 3×3 transition matrix.
 - [Comparison](../guide/comparison.md) — Tolerance semantics and the strategy dispatch chain.
-- [Determinism](../guide/determinism.md) — How `RNGPatcher` keeps captures bit-stable.
+- [Determinism](../guide/determinism.md) — How `RNGPatcher` keeps captures reproducible.
