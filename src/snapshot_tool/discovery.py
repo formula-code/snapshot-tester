@@ -86,10 +86,10 @@ class BenchmarkDiscovery:
                         benchmarks.append(benchmark)
 
             # Discover class-level benchmarks
-            for node in tree.body:
-                if isinstance(node, ast.ClassDef):
-                    class_benchmarks = self._discover_class_benchmarks(node, module_path)
-                    benchmarks.extend(class_benchmarks)
+            classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+            for node in classes.values():
+                class_benchmarks = self._discover_class_benchmarks(node, module_path, classes)
+                benchmarks.extend(class_benchmarks)
 
         except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
@@ -97,41 +97,16 @@ class BenchmarkDiscovery:
         return benchmarks
 
     def _discover_class_benchmarks(
-        self, class_node: ast.ClassDef, module_path: str
+        self, class_node: ast.ClassDef, module_path: str, classes: Optional[dict] = None
     ) -> list[BenchmarkInfo]:
         """Discover benchmarks within a class."""
         benchmarks = []
-
-        # Check if class has params and param_names attributes
-        params = None
-        param_names = None
-        setup_method = None
-        has_setup_cache = False
-
-        # Check if we need to evaluate params at runtime
-        needs_runtime_eval = False
-
-        for node in class_node.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        if target.id == "params" and (
-                            isinstance(node.value, ast.List) or isinstance(node.value, ast.Tuple)
-                        ):
-                            # Check if params contain complex expressions that need runtime evaluation
-                            if self._needs_runtime_evaluation(node.value):
-                                needs_runtime_eval = True
-                                params = None  # Will be evaluated at runtime
-                            else:
-                                params = self._extract_params(node.value)
-                        elif target.id == "param_names" and isinstance(node.value, ast.List):
-                            param_names = self._extract_param_names(node.value)
-
-            elif isinstance(node, ast.FunctionDef):
-                if node.name == "setup":
-                    setup_method = node.name
-                elif node.name == "setup_cache":
-                    has_setup_cache = True
+        attrs = self._class_attributes(class_node, classes or {}, set())
+        params = attrs.get("params")
+        param_names = attrs.get("param_names")
+        setup_method = attrs.get("setup_method")
+        has_setup_cache = attrs.get("has_setup_cache", False)
+        needs_runtime_eval = attrs.get("needs_runtime_eval", False)
 
         # Find benchmark methods in the class
         for node in class_node.body:
@@ -156,6 +131,38 @@ class BenchmarkDiscovery:
                     benchmarks.append(benchmark)
 
         return benchmarks
+
+    def _class_attributes(self, class_node: ast.ClassDef, classes: dict, seen: set) -> dict:
+        """params, param_names, setup and setup_cache of a class, including those of base classes in the same file."""
+        attrs: dict = {}
+        seen.add(class_node.name)
+        for base in reversed(class_node.bases):
+            if isinstance(base, ast.Name) and base.id in classes and base.id not in seen:
+                attrs.update(self._class_attributes(classes[base.id], classes, seen))
+
+        for node in class_node.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        if target.id == "params" and (
+                            isinstance(node.value, ast.List) or isinstance(node.value, ast.Tuple)
+                        ):
+                            # Check if params contain complex expressions that need runtime evaluation
+                            if self._needs_runtime_evaluation(node.value):
+                                attrs["needs_runtime_eval"] = True
+                                attrs["params"] = None  # Will be evaluated at runtime
+                            else:
+                                attrs["needs_runtime_eval"] = False
+                                attrs["params"] = self._extract_params(node.value)
+                        elif target.id == "param_names" and isinstance(node.value, ast.List):
+                            attrs["param_names"] = self._extract_param_names(node.value)
+
+            elif isinstance(node, ast.FunctionDef):
+                if node.name == "setup":
+                    attrs["setup_method"] = node.name
+                elif node.name == "setup_cache":
+                    attrs["has_setup_cache"] = True
+        return attrs
 
     def _get_method_parameters(self, method_node: ast.FunctionDef) -> list[str]:
         """Extract parameter names from a method definition."""
