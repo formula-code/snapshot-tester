@@ -1,8 +1,7 @@
-"""
-Execution tracer for capturing function return values.
+"""Capture a benchmark's return value with sys.settrace.
 
-This module implements a tracing mechanism using sys.settrace to capture
-the deepest function call's return value during benchmark execution.
+The tracer keeps the shallowest meaningful return value from user code. The attribute is named
+``deepest_call`` but holds the shallowest call.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ class TraceResult:
 
 
 class ExecutionTracer:
-    """Traces function execution to capture the deepest return value."""
+    """Trace function calls and keep the shallowest meaningful return value."""
 
     def __init__(self, max_depth: int = 100):
         self.max_depth = max_depth
@@ -37,7 +36,7 @@ class ExecutionTracer:
         self.tracing = False
         self.current_frame: Optional[types.FrameType] = None
 
-        # Functions to exclude from tracing - expanded to include all stdlib modules
+        # Modules never traced; also covers stdlib on Python < 3.10
         self.excluded_modules = {
             "builtins",
             "sys",
@@ -108,7 +107,6 @@ class ExecutionTracer:
             "site",
         }
 
-        # Method names to exclude
         self.excluded_methods = {
             "__init__",
             "__new__",
@@ -146,15 +144,13 @@ class ExecutionTracer:
         """
         self.start_tracing()
         try:
-            # Execute the function
             func(*args, **kwargs)
         except Exception:
-            # Even if the function raises an exception, we might have captured something
+            # A value captured before the exception is still returned
             pass
         finally:
             result = self.stop_tracing()
 
-        # If we didn't capture anything, return a failed result
         if result is None:
             return TraceResult(
                 return_value=None,
@@ -176,7 +172,7 @@ class ExecutionTracer:
         sys.settrace(self._trace_calls)
 
     def stop_tracing(self) -> Optional[TraceResult]:
-        """Stop tracing and return the deepest captured call."""
+        """Stop tracing and return the captured call, or None."""
         sys.settrace(None)
         self.tracing = False
         return self.deepest_call
@@ -203,14 +199,12 @@ class ExecutionTracer:
         self.current_depth += 1
         self.max_depth_reached = max(self.max_depth_reached, self.current_depth)
 
-        # Limit depth to prevent infinite recursion
+        # Frames deeper than max_depth are not traced
         if self.current_depth > self.max_depth:
             return None
 
-        # Store the frame for potential result capture
         self.current_frame = frame
 
-        # No more debug print here
         return self._trace_calls
 
     def _handle_return(self, frame: types.FrameType, arg: Any) -> Optional[Callable]:
@@ -218,8 +212,7 @@ class ExecutionTracer:
         if not self._should_trace_frame(frame):
             return None
 
-        # Capture meaningful return values, preferring shallower calls (closer to benchmark)
-        # Update if this is a shallower call or if we haven't captured anything yet
+        # Keep the shallowest meaningful value; at equal depth the later call wins
         if arg is not None and not self._is_meaningless_return(arg):
             if self.deepest_call is None or self.current_depth <= self.deepest_call.depth:
                 self.deepest_call = TraceResult(
@@ -238,7 +231,7 @@ class ExecutionTracer:
         if not self._should_trace_frame(frame):
             return None
 
-        # Record exception as first call if we haven't captured anything yet
+        # Record the exception only if nothing was captured yet
         if self.deepest_call is None:
             self.deepest_call = TraceResult(
                 return_value=None,
@@ -254,35 +247,30 @@ class ExecutionTracer:
 
     def _should_trace_frame(self, frame: types.FrameType) -> bool:
         """Determine if we should trace this frame."""
-        # Skip frames without proper module info
         if not frame.f_globals or "__name__" not in frame.f_globals:
             return False
 
         module_name = frame.f_globals["__name__"]
-        # Skip if module_name is None (can happen in some execution contexts)
         if module_name is None:
             return False
 
         function_name = frame.f_code.co_name
 
-        # Skip excluded modules (manual list)
-        # Check for exact match or proper module prefix (with dot separator)
         if any(
             module_name == excluded or module_name.startswith(excluded + ".")
             for excluded in self.excluded_modules
         ):
             return False
 
-        # Skip all standard library modules using sys.stdlib_module_names (Python 3.10+)
+        # Python 3.10+: skip a module if it or a parent package is in the stdlib
         if hasattr(sys, "stdlib_module_names"):
-            # Check if the module or any parent module is in stdlib
             module_parts = module_name.split(".")
             for i in range(len(module_parts)):
                 partial_name = ".".join(module_parts[: i + 1])
                 if partial_name in sys.stdlib_module_names:
                     return False
 
-        # Skip numpy internals and other common third-party library internals
+        # numpy internals
         numpy_internal_patterns = [
             "numpy._core",
             "numpy.core",
@@ -301,7 +289,7 @@ class ExecutionTracer:
         if any(module_name.startswith(pattern) for pattern in numpy_internal_patterns):
             return False
 
-        # Skip shapely internals - only trace top-level shapely functions
+        # shapely internals; public shapely functions are still traced
         shapely_internal_patterns = [
             "shapely.lib",
             "shapely._",
@@ -311,11 +299,10 @@ class ExecutionTracer:
         if any(module_name.startswith(pattern) for pattern in shapely_internal_patterns):
             return False
 
-        # Skip excluded methods
         if function_name in self.excluded_methods:
             return False
 
-        # Skip lambda functions and anonymous functions
+        # Lambdas, comprehensions and other synthetic code names
         if function_name == "<lambda>" or function_name.startswith("<"):
             return False
 
@@ -323,23 +310,19 @@ class ExecutionTracer:
 
     def _is_meaningless_return(self, value: Any) -> bool:
         """Check if a return value is meaningless for snapshot testing."""
-        # Skip common meaningless returns
         if value is None:
             return True
 
-        # Skip empty containers (but be careful with types)
         try:
             if hasattr(value, "__len__") and len(value) == 0:
                 return True
         except (TypeError, AttributeError):
-            # Some objects have __len__ but can't be called with len()
             pass
 
-        # Skip simple types that are likely not the main computation result
+        # Zero scalars (0, 0.0, "", False) are not meaningful
         if isinstance(value, (int, float, str, bool)) and not self._is_significant_value(value):
             return True
 
-        # Always capture class instances - they might be important return values
         if self._is_class_instance(value):
             return False
 
@@ -347,36 +330,30 @@ class ExecutionTracer:
 
     def _is_significant_value(self, value: Any) -> bool:
         """Check if a simple value is significant enough to capture."""
-        # Capture non-zero numbers, non-empty strings, etc.
         if isinstance(value, (int, float)):
             return value != 0
         elif isinstance(value, str):
             return len(value) > 0
         elif isinstance(value, bool):
-            return True  # Always capture booleans
+            return True
 
         return True
 
     def _is_class_instance(self, value: Any) -> bool:
         """Check if a value is a class instance (not a built-in type)."""
-        # Check if it's an instance of a user-defined class
         if hasattr(value, "__class__"):
             class_name = value.__class__.__name__
             module_name = getattr(value.__class__, "__module__", "") or ""
 
-            # Skip built-in types and common library types
             if module_name in ("builtins", "types", "collections", "typing"):
                 return False
 
-            # Skip if it's a basic type
             if class_name in ("int", "float", "str", "bool", "list", "dict", "tuple", "set"):
                 return False
 
-            # Skip numpy arrays and other common scientific computing types
             if module_name and module_name.startswith("numpy"):
                 return False
 
-            # It's likely a user-defined class instance
             return True
 
         return False

@@ -1,6 +1,6 @@
 # CLI (`snapshot-tool`)
 
-`snapshot-tool` is the primary entrypoint. It discovers ASV benchmarks in a directory, captures their return values, and compares them on later runs. All operations are local — no network or database is involved.
+`snapshot-tool` is the main entry point. It discovers ASV benchmarks in a directory, captures their return values, and compares them on later runs. All operations are local; no network access or database server is used.
 
 ## Quick reference
 
@@ -22,7 +22,7 @@ snapshot-tool config --show
 snapshot-tool config --init
 ```
 
-`snapshot-tool` exits non-zero on a verification failure; `0` otherwise. `baseline` always exits `0` — it only records state.
+`snapshot-tool` exits with `1` on a verification failure or an unhandled error, and with `0` otherwise. `baseline` exits `0` unless an error occurs; it only records state.
 
 ## Global flags
 
@@ -30,9 +30,9 @@ These apply to every subcommand:
 
 | Flag | Description |
 |------|-------------|
-| `--config PATH`, `-c PATH` | Path to a `snapshot_config.json` (default: `./snapshot_config.json`) |
-| `--verbose`, `-v` | Verbose logging (prints comparison details and full tracebacks on errors) |
-| `--quiet`, `-q` | Suppress per-benchmark `[PASS]` / `[SKIP]` lines |
+| `--config PATH`, `-c PATH` | Accepted but not used. The CLI always reads `./snapshot_config.json`. |
+| `--verbose`, `-v` | Print a traceback when a command raises an error. Comparison details are logged at DEBUG level, which the default log setup does not show. |
+| `--quiet`, `-q` | Hide most per-benchmark `[PASS]` / `[SKIP]` lines |
 
 ## Parallel execution
 
@@ -43,7 +43,7 @@ These apply to every subcommand:
 | `--parallel` | Run benchmarks across worker **processes** instead of serially | off (serial) |
 | `--workers N` | Worker count when `--parallel` is set | `min(cpu_count, 8)` |
 
-Default behaviour is unchanged — without `--parallel` everything runs serially in-process. With `--parallel`, `(benchmark, parameters)` tasks are distributed to a process pool (true parallelism + per-process `sys.settrace`/RNG/import isolation). Workers only execute, trace, and serialize the captured value; the **main process performs every SQLite write** (SQLite is single-writer) and all comparison. Parallel runs are verified to produce **byte-identical** snapshots to serial (same content-addressed sha256 blob hashes), so determinism is preserved. A task whose parameters can't be pickled across the process boundary transparently falls back to in-process execution.
+Without `--parallel`, everything runs serially in one process. With `--parallel`, `(benchmark, parameters)` tasks go to a process pool, so each worker has its own `sys.settrace`, RNG and import state. Workers only run, trace, and serialize the captured value; the **main process does every SQLite write** (SQLite has one writer) and all comparison. Parallel and serial runs write the same blobs for deterministic benchmarks. A task whose parameters cannot be pickled runs in the main process. If a worker dies (for example, it is killed for memory), the remaining tasks run serially in the main process.
 
 ```bash
 # Capture a large suite using all cores (capped at 8)
@@ -70,7 +70,7 @@ snapshot-tool list <benchmark_dir> [--filter REGEX]
 | `benchmark_dir` | Directory to scan recursively for `*.py` (skips `__init__.py`) |
 | `--filter REGEX` | Python regex matched against `f"{module_path}.{benchmark_name}"` |
 
-For each benchmark, `list` prints the dotted path, its type (`function` or `method`), the setup method if any, and the number of parameter combinations. Use `--verbose` to also print the first five parameter combinations explicitly.
+For each benchmark, `list` prints the dotted path, its type (`function` or `method`), the setup method if any, and the number of parameter combinations. The first five combinations are logged at DEBUG level with `--verbose`; the default log setup does not show them.
 
 ```bash
 snapshot-tool list tests/test_repos/shapely_benchmarks --filter '^geometry\.'
@@ -97,11 +97,12 @@ snapshot-tool capture <benchmark_dir> \
 For every parameter combination, `capture`:
 
 1. Reseeds RNGs (`RNGPatcher.patch_all()`).
-2. Loads the benchmark module via `importlib.util`, synthesizing any parent packages in `sys.modules` so relative imports work.
-3. Calls `setup_cache()` once per class (cached), then `setup(*params)`, then the benchmark method.
-4. Installs `sys.settrace` and runs. On return, takes the shallowest meaningful user-code return value.
-5. Pickles, gzips, and content-addresses the result by sha256, then inserts (or refcounts) it into `<snapshot_dir>/snapshots.db`. A JSON metadata sidecar is also written under `<snapshot_dir>/<module>/<class.benchmark>/<param-hash>.json` for downstream tooling.
-6. If the benchmark raises, times out, or returns something unpicklable, a **failed capture marker** is written instead — a snapshot with `capture_failed=True` in metadata. `verify` will skip these.
+2. Loads the benchmark module via `importlib.util`, and creates any missing parent packages in `sys.modules` so relative imports work.
+3. Rewrites a trailing expression statement in the benchmark into a `return`.
+4. Calls `setup_cache()` once per class (cached), then `setup(*params)`.
+5. Installs `sys.settrace` and runs the benchmark. It keeps the shallowest meaningful user-code return value.
+6. Pickles, gzips, and content-addresses the result by sha256, then inserts (or refcounts) it into `<snapshot_dir>/snapshots.db`. A JSON metadata sidecar is also written under `<snapshot_dir>/<module>/<class.benchmark>/<param-hash>.json` for downstream tooling. A value that cannot be pickled is stored as a placeholder dict, which `verify` skips.
+7. If the benchmark raises or times out, a **failed capture marker** is written instead: a snapshot with `capture_failed=True` in its metadata. `verify` skips these.
 
 ```bash
 # Capture everything with a tight 30-second budget per benchmark
@@ -113,7 +114,7 @@ snapshot-tool capture tests/test_repos/astropy_benchmarks \
 ```
 
 !!! warning
-    `capture` is destructive in the sense that it overwrites existing snapshots at the same path. If you want to keep an old set of snapshots around (e.g., for A/B comparison) move the directory aside first or pass a different `--snapshot-dir`.
+    `capture` overwrites existing snapshots with the same `test_id`. To keep an old set of snapshots (for example, for an A/B comparison), move the directory first or pass a different `--snapshot-dir`.
 
 ---
 
@@ -141,8 +142,8 @@ Per-test outcomes are:
 | Outcome | Meaning |
 |---------|---------|
 | `[PASS]` | Comparison matched within tolerance |
-| `[FAIL]` | The current return value differs, **or** the benchmark crashed during verify (but succeeded during capture — usually a real regression or environment drift) |
-| `[SKIP]` | No snapshot exists, the snapshot was a failed-capture marker, or the comparison itself was unsupported (e.g., generators, callables, unpicklable values) |
+| `[FAIL]` | The current return value differs, **or** the benchmark raised an error during verify although it succeeded during capture (usually a real regression or a change in the environment) |
+| `[SKIP]` | No snapshot exists, the snapshot is a failed-capture marker, the benchmark timed out during verify, or the stored value is a placeholder that cannot be compared (generators, callables, unpicklable values) |
 
 At the end, `verify` writes a JSON summary to `--summary`:
 
@@ -158,7 +159,7 @@ At the end, `verify` writes a JSON summary to `--summary`:
 }
 ```
 
-If a `baseline.json` is present in `--snapshot-dir`, the summary is **augmented** with a 3×3 transition matrix derived from `compute_transitions(baseline, verify)`:
+If a `baseline.json` is present in `--snapshot-dir`, the summary also holds the transition counts from `compute_transitions(baseline, verify)`. Only the status pairs that occur are written; the log prints all nine. When `pass-to-fail` or `skip-to-fail` is not zero, the summary also lists the affected tests in `pass-to-fail-ids` and `skip-to-fail-ids`:
 
 ```json
 {
@@ -191,7 +192,7 @@ snapshot-tool baseline <benchmark_dir> \
     [--tolerance RTOL ATOL] [--timeout SEC]
 ```
 
-The flags mean exactly what they do for `verify`, except there is no `--summary` — the output is `baseline.json` inside the snapshot directory.
+The flags mean the same as for `verify`, except that there is no `--summary`; the output is `baseline.json` in the snapshot directory. Unlike `verify`, `baseline` records a timeout as `fail`.
 
 A typical CI workflow:
 
@@ -202,16 +203,16 @@ snapshot-tool baseline benchmarks   # writes baseline.json
 
 # ... apply optimization patch, then on the "after" revision ...
 
-snapshot-tool verify   benchmarks   # summary.json now includes the transition matrix
+snapshot-tool verify   benchmarks   # summary.json includes the transition counts
 ```
 
-`baseline` always returns `0` — it only records state.
+`baseline` returns `0` unless an error occurs; it only records state.
 
 ---
 
 ### `clean`
 
-Reports on the snapshot directory. Currently informational only.
+Prints statistics about the snapshot directory. It does not delete anything.
 
 ```bash
 snapshot-tool clean [--snapshot-dir DIR] [--dry-run]
@@ -220,9 +221,9 @@ snapshot-tool clean [--snapshot-dir DIR] [--dry-run]
 | Flag | Description |
 |------|-------------|
 | `--snapshot-dir DIR` | Directory to inspect (default: from config) |
-| `--dry-run` | Show what *would* be deleted without deleting |
+| `--dry-run` | Accepted; `clean` deletes nothing with or without it |
 
-Today `clean` prints the snapshot count and total size on disk; it does not delete files. To wipe snapshots, remove the directory yourself (`rm -rf .snapshots/`) — `customtest.sh` is the canonical example.
+`clean` prints the snapshot count and the compressed size. To remove snapshots, delete the directory (`rm -rf .snapshots/`), as `customtest.sh` does.
 
 ---
 
@@ -235,7 +236,7 @@ snapshot-tool config --init    # write default snapshot_config.json
 snapshot-tool config --show    # print the active config
 ```
 
-The config file is loaded from `./snapshot_config.json` unless overridden with `--config PATH`. See [Configuration](configuration.md) for the schema and every field.
+The config file is always `./snapshot_config.json` (the `--config` flag is not used). See [Configuration](configuration.md) for the schema and every field.
 
 ## Filter semantics
 
@@ -253,7 +254,7 @@ snapshot-tool list benchmarks --filter '^coordinates\..*'
 uv run snapshot-tool list      benchmarks
 uv run snapshot-tool capture   benchmarks --timeout 30
 uv run snapshot-tool baseline  benchmarks
-uv run snapshot-tool verify    benchmarks   # baseline of yourself: should be 100% pass-to-pass
+uv run snapshot-tool verify    benchmarks   # same code as the baseline: expect only pass-to-pass
 
 # 2. Change code, re-verify
 uv run snapshot-tool verify    benchmarks   # transitions tell you what flipped
@@ -265,4 +266,4 @@ For a one-shot smoke test, `customtest.sh` runs the full roundtrip against the b
 
 - [Configuration](configuration.md) — the `snapshot_config.json` schema.
 - [Baseline & Verify](baseline-and-verify.md) — what each transition cell means.
-- [Discovery](discovery.md) — what `list` is actually doing under the hood.
+- [Discovery](discovery.md) — how `list` finds benchmarks.

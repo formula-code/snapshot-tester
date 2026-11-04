@@ -1,6 +1,6 @@
 # Determinism
 
-Snapshot testing is only useful if the same code produces the same output twice. `BenchmarkRunner` enforces this by reseeding every known RNG before each benchmark invocation. The component responsible is `RNGPatcher`.
+Snapshot testing is only useful if the same code produces the same output twice. `BenchmarkRunner` reseeds the RNGs listed below before each benchmark run. The component responsible is `RNGPatcher`.
 
 ## What gets reseeded
 
@@ -9,7 +9,7 @@ Snapshot testing is only useful if the same code produces the same output twice.
 | Library | Calls | Notes |
 |---------|-------|-------|
 | **Python stdlib** | `random.seed(seed)` | Always — `random` is in the stdlib. |
-| **NumPy** (legacy API) | `np.random.seed(seed)` | If numpy is importable. Affects `np.random.rand`, `np.random.randn`, etc. Compatible with numpy 1.12+ (2017). |
+| **NumPy** (legacy API) | `np.random.seed(seed)` | If numpy is importable. Affects `np.random.rand`, `np.random.randn`, etc. Works with numpy 1.12 and later. |
 | **PyTorch** | `torch.manual_seed(seed)`, plus `torch.cuda.manual_seed_all(seed)` if CUDA is available | If torch is importable. |
 | **TensorFlow** | `tf.random.set_seed(seed)` | If tensorflow is importable. |
 
@@ -21,11 +21,9 @@ Default `seed=42`. `BenchmarkRunner` instantiates `RNGPatcher(seed=42)` and call
 
 ## Numpy Generator API
 
-`RNGPatcher` reseeds the **legacy** numpy API (`np.random.seed`). The newer `numpy.random.Generator` API (`np.random.default_rng()`) is **not** patched automatically — each `Generator` instance carries its own state and is created independently.
+`RNGPatcher` reseeds only the **legacy** numpy API (`np.random.seed`). It does not seed the `numpy.random.Generator` API. Each `Generator` has its own state, and `np.random.default_rng()` without a seed takes fresh entropy from the operating system, so its output changes on every run.
 
-If a benchmark uses `default_rng()`, the same call inside `setup` or the benchmark method will produce the same output **as long as no other code is producing entropy in between**. This is usually fine because `patch_all` runs immediately before `setup`/method execution, so the import-time random state is irrelevant.
-
-If you have a benchmark that creates a `Generator` *outside* the setup path (e.g., at module import), pin its seed explicitly in the benchmark code — `RNGPatcher` can't reach module-level state that was already instantiated.
+A benchmark that uses `Generator` gives stable snapshots only if it passes a fixed seed, for example `np.random.default_rng(0)`. This applies in `setup`, in the benchmark method, and at module import.
 
 ## Inside `BenchmarkRunner`
 
@@ -44,16 +42,16 @@ class BenchmarkRunner:
 - Again before `setup_cache()`, if the class has one.
 - Again before `setup()`, if the class has one.
 
-The whole point of running it three times is to guarantee that the RNG state immediately before any user-code path is identical between capture and verify. **Do not bypass these calls** — bypassing them is exactly equivalent to making the snapshots non-reproducible.
+These calls make the reseeded RNG state the same before each user-code step in capture and in verify. **Do not remove these calls**; without them, snapshots are not reproducible.
 
 ## Module-level constants vs runtime state
 
-`RNGPatcher` only handles RNG state. Other sources of nondeterminism are out of scope:
+`RNGPatcher` handles only RNG state. It does not handle other sources of nondeterminism:
 
 - **Dict/set iteration order** — Python ≥ 3.7 dicts iterate insertion order; sets do not. If a benchmark returns a `set` or iterates one, the result may vary between runs.
 - **Hash randomization** — `PYTHONHASHSEED` affects `hash()` for strings/bytes. Snapshots survive this if the benchmark doesn't expose hashes; if it does, set `PYTHONHASHSEED=0` (or any constant) in your environment.
 - **Wall-clock time** — `datetime.now()`, `time.time()` and similar are not patched.
-- **OS / hardware** — floating-point semantics can differ across BLAS implementations and CPU vector widths. `--tolerance` is the primary mitigation; if your `pass-to-fail` transitions are tiny float drifts, loosen `rtol`/`atol` before assuming a real regression.
+- **OS / hardware** — floating-point results can differ across BLAS implementations and CPU vector widths. Use `--tolerance` for this: if your `pass-to-fail` transitions are very small float differences, increase `rtol`/`atol` before you treat them as a real regression.
 
 ## Programmatic use
 
@@ -79,21 +77,21 @@ with RNGPatcher(seed=123):
     do_random_stuff()
 ```
 
-There's also `patch_all_rngs` / `unpatch_all_rngs` — these wrap a single global `_global_patcher`. The "unpatch" path doesn't actually restore the prior RNG state (you can't; it's already been consumed) — it just allows another `patch_all_rngs(...)` call to take effect.
+`patch_all_rngs` / `unpatch_all_rngs` wrap one global `_global_patcher`. `RNGPatcher` only seeds RNGs; it does not replace any function. So "unpatch" (and leaving the context manager) does not restore an earlier RNG state. `unpatch_all_rngs` only lets a later `patch_all_rngs(...)` call take effect.
 
 ## Quick determinism check
 
 If you suspect a benchmark is non-deterministic despite the patcher:
 
 ```bash
-# Capture and verify twice. The second verify should be 100% pass-to-pass.
+# Capture, baseline and verify the same code. Expect only pass-to-pass.
 snapshot-tool capture  benchmarks
 snapshot-tool baseline benchmarks
 snapshot-tool verify   benchmarks
 jq '."pass-to-fail"' summary.json   # expect 0
 ```
 
-If you see `pass-to-fail` > 0 on this self-comparison, the benchmark is reading entropy from a source `RNGPatcher` doesn't cover. Common culprits: a `Generator` instantiated at import time, `os.urandom`, `secrets`, network/filesystem timestamps, dict ordering of stringly-keyed maps with `PYTHONHASHSEED` unset.
+If `pass-to-fail` is greater than 0 here, the benchmark reads entropy from a source that `RNGPatcher` does not seed. Common causes: an unseeded `numpy.random.Generator`, `os.urandom`, `secrets`, network or filesystem timestamps, and the order of sets of strings when `PYTHONHASHSEED` is not set.
 
 ## Next steps
 

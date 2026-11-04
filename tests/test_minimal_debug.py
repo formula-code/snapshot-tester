@@ -3,9 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-"""
-Test script using minimal benchmarks to verify the snapshot testing tool fixes.
-"""
+"""Run discovery, benchmarks and snapshot storage on minimal benchmarks without dependencies."""
 
 import sys
 from pathlib import Path

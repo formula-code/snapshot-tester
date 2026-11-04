@@ -1,6 +1,6 @@
 # Installation
 
-`snapshot-tool` is pure Python (3.8 → 3.13) with no required runtime dependencies. Numpy is optional — detected lazily by the comparator if your benchmarks return arrays.
+`snapshot-tool` is pure Python (3.8 → 3.13) with no required runtime dependencies. Numpy is optional; the comparator uses it if it is installed.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-If you'd rather use `pip`, you can skip this step — see the [pip installation](#using-pip) at the bottom.
+To use `pip` instead, skip this step and see [Using pip](#using-pip).
 
 ## 2. Clone and install
 
@@ -39,7 +39,7 @@ uv run snapshot-tool --help
 
 You should see the top-level usage with six subcommands: `list`, `capture`, `verify`, `baseline`, `clean`, `config`.
 
-Run the unit tests (excluding the heavy real-repo roundtrips, which is what CI does on `main`):
+Run the unit tests without the slow real-repo roundtrips (the same command as the `tests.yml` CI job):
 
 ```bash
 uv run pytest -v --ignore=tests/test_repos/ --ignore=tests/test_cli_roundtrip.py
@@ -47,7 +47,7 @@ uv run pytest -v --ignore=tests/test_repos/ --ignore=tests/test_cli_roundtrip.py
 
 ## 4. Smoke test against a bundled benchmark repo
 
-The repo vendors three real benchmark suites under `tests/test_repos/` (astropy, pandas, shapely). The `customtest.sh` script runs the canonical `list → capture → baseline → verify` roundtrip against the shapely suite:
+The repo vendors three real benchmark suites under `tests/test_repos/` (astropy, pandas, shapely). The `customtest.sh` script runs the `list → capture → baseline → verify` roundtrip against the shapely suite:
 
 ```bash
 bash customtest.sh
@@ -77,18 +77,18 @@ pip install -e .
 pip install git+https://github.com/formula-code/snapshot-tester.git
 ```
 
-The runtime has no required dependencies. To run the bundled test suite you'll need the dev extras (`pytest`, `numpy`, `shapely`, `astropy`, etc.) — install them manually or via `uv sync --group dev`.
+The runtime has no required dependencies. The test suite needs the `dev` dependency group (`pytest`, `numpy`, `shapely`, `astropy`, and others). Install them by hand or with `uv sync --group dev`.
 
 ## Development tasks
 
-The same lint commands CI runs (the `lint.yml` job runs `--check` only — no auto-fix):
+The lint commands that the `lint.yml` CI job runs (check only, no automatic fixes):
 
 ```bash
 uv run ruff format --check src/ tests/
 uv run ruff check src/ tests/
 ```
 
-The full per-Python test matrix (3.8 → 3.13) runs in CI; locally you typically only need one interpreter:
+CI runs the tests on Python 3.8 to 3.13. Locally, one interpreter is enough:
 
 ```bash
 uv run pytest -v --ignore=tests/test_repos/ --ignore=tests/test_cli_roundtrip.py

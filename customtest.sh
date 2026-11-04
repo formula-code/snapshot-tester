@@ -1,9 +1,7 @@
-# Run from repository root
+# Run list, capture, baseline and verify against the bundled shapely benchmarks.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Do this for all repos
-# for repo in tests/test_repos/*_benchmarks/; do
 repo="tests/test_repos/shapely_benchmarks/"
 echo "Processing repository: $repo"
 cd "$repo" || { echo "Failed to change directory to $repo"; exit 1; }
@@ -13,10 +11,8 @@ echo "Listing benchmarks..."
 snapshot-tool list . 2>&1 | head -20
 echo "Capturing snapshots..."
 snapshot-tool capture .
-echo "Verifying snapshots..."
+echo "Recording baseline..."
 snapshot-tool baseline .
 echo "Verifying snapshots..."
 snapshot-tool verify .
 echo "Completed processing for $repo"
-# cd "$SCRIPT_DIR" || { echo "Failed to change directory to $SCRIPT_DIR"; exit 1; }
-# done

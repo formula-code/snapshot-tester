@@ -7,12 +7,10 @@ The captured return values are pickled, gzipped, and stored in a content-address
 identical outputs share a single payload on disk. Per-test metadata lives in a
 ``snapshots`` table that references the blob by hash.
 
-A JSON metadata sidecar is still written next to where the per-test entry would
-have lived under the old layout (``<snapshot_dir>/<module>/<class.benchmark>/<param_hash>.json``)
-because downstream tooling consumes it.
+A JSON metadata sidecar is also written per test at
+``<snapshot_dir>/<module>/<class.benchmark>/<param_hash>.json`` for downstream tooling.
 
-The baseline file (``<snapshot_dir>/baseline.json``) is unchanged — it is small,
-human-readable, and easy to diff in CI.
+The baseline (``<snapshot_dir>/baseline.json``) is a flat JSON file that is easy to diff in CI.
 """
 
 from __future__ import annotations
@@ -65,11 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_module_bench
 """
 
 
-# ----------------------------------------------------------------------
-# Value serialization (module-level so worker processes can serialize a
-# captured value without holding a SnapshotManager / SQLite handle).
-# Behaviour is unchanged from the previous SnapshotManager methods.
-# ----------------------------------------------------------------------
+# Module-level so worker processes can serialize a value without a SQLite connection.
 
 
 def serialize_dict_safely(d: dict) -> dict:
@@ -145,21 +139,16 @@ def deserialize_value(value: Any) -> Any:
 
 
 def _safe_param_blob(values) -> bytes:
-    """Pickle a parameter sequence, tolerating unpicklable elements.
+    """Pickle a parameter sequence; unpicklable elements become placeholders, then repr.
 
-    Real benchmark suites parametrize over bare lambdas / local functions
-    (pandas rolling & groupby). The raw pickle of such a tuple raises
-    PicklingError; rather than aborting the whole capture, fall back to
-    per-element ``serialize_value`` placeholders (and finally to repr) so the
-    row is always writable. This blob is metadata only — snapshot identity is
-    the str()-based param_hash, so the substitution can't cause a mismatch.
+    Some suites use lambdas as parameters. The blob is metadata only; the snapshot identity is
+    the str()-based param_hash, so a placeholder cannot cause a mismatch.
     """
     try:
         return pickle.dumps(values, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
         pass
-    # Preserve the original container type (params are tuples, param_names are
-    # lists) so round-tripped metadata keeps the shape callers expect.
+    # Keep the container type: params are tuples, param_names are lists
     rebuild = list if isinstance(values, list) else tuple
     try:
         return pickle.dumps(
@@ -207,11 +196,9 @@ class SnapshotManager:
         self,
         snapshot_dir,
         *,
-        compress_threshold_bytes: int = 0,  # accepted for API back-compat; unused
+        compress_threshold_bytes: int = 0,
     ):
-        # ``compress_threshold_bytes`` is intentionally accepted but ignored —
-        # the SQLite backend always gzips every payload. Kept in the signature
-        # so callers passing it as a keyword don't crash.
+        # Accepted so old callers still work; every payload is gzipped.
         del compress_threshold_bytes
 
         self.snapshot_dir = Path(snapshot_dir)
@@ -224,9 +211,7 @@ class SnapshotManager:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
-    # ------------------------------------------------------------------
-    # Baseline utilities (unchanged — baseline.json stays a flat file)
-    # ------------------------------------------------------------------
+    # Baseline file
 
     def baseline_path(self) -> Path:
         return self.snapshot_dir / "baseline.json"
@@ -270,9 +255,7 @@ class SnapshotManager:
         bench_dir = f"{class_name}.{benchmark_name}" if class_name else benchmark_name
         return f"{module_path}/{bench_dir}/{param_hash}"
 
-    # ------------------------------------------------------------------
-    # Public snapshot API
-    # ------------------------------------------------------------------
+    # Snapshot API
 
     def store_snapshot(
         self,
@@ -286,7 +269,6 @@ class SnapshotManager:
     ) -> Path:
         """Store a snapshot and its metadata; returns the JSON sidecar path."""
 
-        # 1. Serialize the return value (pickle + best-effort placeholder fallback)
         serialized = self._serialize_value(return_value)
 
         snapshot_metadata = SnapshotMetadata(
@@ -311,8 +293,7 @@ class SnapshotManager:
                 failure_reason=None,
             )
         except Exception as e:
-            # Pickle of the value itself failed (the serializer's placeholders
-            # should have prevented this; this is a belt-and-braces fallback).
+            # serialize_value should prevent this; store a placeholder if pickling still fails
             placeholder = {
                 "__unpicklable__": True,
                 "__error__": f"Pickle failed: {e}",
@@ -338,8 +319,7 @@ class SnapshotManager:
     ) -> Path:
         """Record a failed capture; returns the JSON sidecar path."""
 
-        # Coerce non-string failure_reason (e.g., a raw Exception passed in by
-        # an embedding harness) to a string — the column is TEXT.
+        # The column is TEXT; a caller can pass an Exception
         if failure_reason is not None and not isinstance(failure_reason, str):
             failure_reason = f"{type(failure_reason).__name__}: {failure_reason}"
 
@@ -435,7 +415,6 @@ class SnapshotManager:
             )
 
             if data is None:
-                # Failed-capture row, or value was never stored
                 return self._deserialize_value(None), metadata
 
             raw = gzip.decompress(data)
@@ -552,7 +531,6 @@ class SnapshotManager:
             if old_blob_hash is not None:
                 self._release_blob(old_blob_hash)
 
-        # Remove JSON sidecar if present
         sidecar = self._sidecar_path(module_path, benchmark_name, class_name, param_hash)
         if sidecar.exists():
             try:
@@ -607,9 +585,7 @@ class SnapshotManager:
     def __del__(self):
         self.close()
 
-    # ------------------------------------------------------------------
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _write_row(
         self,
@@ -630,19 +606,13 @@ class SnapshotManager:
         if not capture_failed:
             blob_hash = self._store_blob(return_value)
 
-        # Some real benchmarks parametrize over unpicklable values (pandas
-        # rolling/groupby use bare lambdas as params). params_blob is metadata
-        # only — identity is the str()-based param_hash, and verify/baseline
-        # re-derive params from get_param_combinations, never from this blob —
-        # so on a pickling failure we substitute picklable placeholders rather
-        # than letting one benchmark abort the whole capture run.
         params_blob = _safe_param_blob(tuple(meta.parameters))
         param_names_blob = (
             _safe_param_blob(list(meta.param_names)) if meta.param_names is not None else None
         )
 
         with self._conn:
-            # Decrement refcount of any previously-stored blob for this test_id
+            # Release the blob this test_id pointed to before
             prev = self._conn.execute(
                 "SELECT blob_hash FROM snapshots WHERE test_id = ?",
                 (test_id,),
@@ -746,9 +716,7 @@ class SnapshotManager:
             json.dump(meta.to_dict(), f, indent=2, default=str)
         return path
 
-    # ------------------------------------------------------------------
-    # Value serialization (unchanged placeholder semantics)
-    # ------------------------------------------------------------------
+    # Value serialization
 
     def _serialize_dict_safely(self, d: dict) -> dict:
         return serialize_dict_safely(d)
@@ -759,9 +727,7 @@ class SnapshotManager:
     def _deserialize_value(self, value: Any) -> Any:
         return deserialize_value(value)
 
-    # ------------------------------------------------------------------
-    # Metadata helpers (git, python, platform)
-    # ------------------------------------------------------------------
+    # Metadata helpers
 
     def _generate_param_hash(self, parameters: tuple) -> str:
         param_str = str(tuple(parameters))

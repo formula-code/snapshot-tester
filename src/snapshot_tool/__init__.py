@@ -1,9 +1,4 @@
-"""
-Snapshot testing tool for ASV benchmarks.
-
-This package provides tools to capture and compare function return values
-from benchmarks to verify correctness after optimizations.
-"""
+"""Capture and compare ASV benchmark return values to check correctness after optimizations."""
 
 from __future__ import annotations
 
@@ -13,10 +8,8 @@ import sys
 __version__ = "0.2.1"
 
 
-# Configure logging for the package
 def configure_logging(level=logging.INFO):
-    """Configure logging for the snapshot_tool package."""
-    # Configure the package-level logger
+    """Add a stdout handler to the snapshot_tool logger if it has none."""
     logger = logging.getLogger("snapshot_tool")
 
     if not logger.handlers:
@@ -30,10 +23,8 @@ def configure_logging(level=logging.INFO):
     return logger
 
 
-# Configure logging by default
 configure_logging()
 
-# Import main classes for public API
 from .cli import SnapshotCLI, main
 from .comparator import Comparator, ComparisonConfig, ComparisonResult
 from .config import ConfigManager, SnapshotConfig

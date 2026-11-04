@@ -12,7 +12,7 @@
   </a>
 </p>
 
-`snapshot-tool` is a snapshot-testing harness for [ASV](https://github.com/airspeed-velocity/asv) (airspeed-velocity) benchmarks. It captures the return value of each benchmark on a known-good revision, then re-runs the same benchmarks after a code change and reports which outputs drifted — with tolerance-aware numerical comparison.
+`snapshot-tool` is a snapshot-testing harness for [ASV](https://github.com/airspeed-velocity/asv) (airspeed-velocity) benchmarks. It captures the return value of each benchmark on a known-good revision, then runs the same benchmarks again after a code change and reports which outputs changed. Numbers are compared with a tolerance.
 
 It is the correctness companion to ASV's performance numbers: ASV tells you *how fast* a change is, `snapshot-tool` tells you *whether the result is still correct*.
 
@@ -34,7 +34,7 @@ graph LR
 The pipeline runs in four phases:
 
 1. **Discover** — AST-parse each `*.py` under `benchmark_dir` to find ASV-prefixed functions and methods (`time_`, `timeraw_`, `mem_`, `peakmem_`, `track_`). No imports happen at discovery time.
-2. **Run** — Execute each benchmark with `sys.settrace` installed, RNGs reseeded, and a per-benchmark timeout. The tracer captures the shallowest meaningful return value from user code (stdlib, numpy internals, and shapely internals are filtered out).
+2. **Run** — Execute each benchmark with RNGs reseeded and a per-benchmark timeout. A trailing expression statement in the benchmark is rewritten into a `return`, and a `sys.settrace` tracer keeps the shallowest meaningful return value from user code (stdlib, numpy internals, and shapely internals are filtered out).
 3. **Persist** — Write a row into a single SQLite database at `.snapshots/snapshots.db`. Payloads are pickled, gzipped, and content-addressed by sha256 so benchmarks producing identical outputs share one blob on disk. A JSON metadata sidecar is also written per `(module, class, benchmark, parameters)` tuple for downstream tooling.
 4. **Compare** — On a later run, replay each benchmark and compare to the stored snapshot using a pure-Python `isclose` (`rtol` / `atol` / `equal_nan`).
 
@@ -60,18 +60,18 @@ See the **[CLI guide](guide/cli.md)** for the full subcommand reference.
 
 ## Key features
 
-- **Zero-instrumentation capture** — Benchmarks don't need to return anything explicitly. `sys.settrace` snaps the shallowest meaningful user-code return value, so existing ASV benchmarks that just compute-and-discard work as-is.
+- **No changes to benchmarks** — Benchmarks do not need to return a value. The runner turns a trailing expression into a `return`, and the tracer keeps the shallowest meaningful user-code return value, so ASV benchmarks that compute and discard a result work unchanged.
 - **Tolerance-aware comparison** — Pure-Python `isclose` (`rtol` / `atol` / `equal_nan`) for scalars, numpy arrays (element-wise), Python sequences, dicts, and custom classes with `__eq__`. Numpy is optional — detected lazily.
-- **Deterministic by construction** — Python `random`, numpy legacy and Generator APIs, PyTorch, and TensorFlow are reseeded before every run via [`RNGPatcher`](guide/determinism.md). The whole point of snapshot testing is bit-stable output.
-- **Per-benchmark timeouts** — Each benchmark runs inside a `ThreadPoolExecutor.submit(...).result(timeout=...)` so hung benchmarks fail fast instead of stalling the whole run.
-- **One SQLite file, deduplicated and gzipped** — Every payload is pickled, gzipped, and content-addressed by sha256 in a single `snapshots.db`. Benchmarks emitting identical outputs share a single blob via refcount. No tens-of-thousands of `.pkl` files.
-- **Baseline → verify transition matrix** — Record a `baseline.json` of pass/fail/skip statuses on one revision, then `verify` against another to get a 3×3 transition matrix (`pass-to-fail`, `fail-to-pass`, etc.) — useful for grading optimization attempts in CI.
-- **Python 3.8 → 3.13** — Pure standard library at runtime; numpy is detected lazily and never imported by the tool itself.
+- **Reseeded RNGs** — Python `random`, the numpy legacy API, PyTorch, and TensorFlow are reseeded before every run via [`RNGPatcher`](guide/determinism.md). `numpy.random.Generator` instances are not seeded.
+- **Per-benchmark timeouts** — On the main thread a `SIGALRM` timer stops a benchmark that runs past `--timeout`, so one hung benchmark does not stop the whole run.
+- **One SQLite file, deduplicated and gzipped** — Every payload is pickled, gzipped, and content-addressed by sha256 in a single `snapshots.db`. Benchmarks with identical outputs share one blob through a refcount.
+- **Baseline → verify transition matrix** — Record a `baseline.json` of pass/fail/skip statuses on one revision, then `verify` against another to get transition counts (`pass-to-fail`, `fail-to-pass`, etc.). Use this to grade optimization attempts in CI.
+- **Python 3.8 → 3.13** — Standard library only at runtime. The comparator uses numpy only if it is installed.
 
 ## Quick links
 
 - [Installation](getting-started/installation.md) — Set up the dev environment with `uv`.
-- [**CLI (`snapshot-tool`)**](guide/cli.md) — **The primary entrypoint** — full subcommand reference.
+- [**CLI (`snapshot-tool`)**](guide/cli.md) — The main entry point; full subcommand reference.
 - [Python API Quickstart](getting-started/quickstart.md) — Programmatic usage of `BenchmarkDiscovery`, `BenchmarkRunner`, `SnapshotManager`, and `Comparator`.
 - [Baseline & Verify](guide/baseline-and-verify.md) — The 3×3 transition matrix and how to wire it into CI.
 - [Configuration](guide/configuration.md) — `snapshot_config.json` and CLI flag reference.

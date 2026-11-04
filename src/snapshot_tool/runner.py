@@ -1,9 +1,4 @@
-"""
-Benchmark runner for executing ASV benchmarks with tracing.
-
-This module executes benchmarks with tracing enabled and handles setup methods,
-parameter combinations, and global variable initialization.
-"""
+"""Run ASV benchmarks with tracing, setup methods, parameter combinations and timeouts."""
 
 from __future__ import annotations
 
@@ -31,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 class BenchmarkTimeout(BaseException):
-    """Raised inside a benchmark by the timer; a BaseException, so the benchmark's own ``except Exception`` cannot hide it."""
+    """Raised inside a benchmark by the timer.
+
+    It is a BaseException, so the benchmark's own ``except Exception`` cannot catch it.
+    """
 
 
 class BenchmarkRunner:
@@ -48,31 +46,20 @@ class BenchmarkRunner:
         self.project_dir = project_dir or benchmark_dir.parent
         self.discovery = BenchmarkDiscovery(self.benchmark_dir)
         self.tracer = ExecutionTracer()
-        self.seed = seed  # Deterministic seed for reproducibility
-        self.timeout = timeout  # Maximum execution time in seconds
-
-        # Initialize RNG patcher for deterministic execution
+        self.seed = seed
+        self.timeout = timeout  # seconds per benchmark; None means no limit
         self.rng_patcher = RNGPatcher(seed=seed)
 
-        # Cache for loaded modules
         self._module_cache: dict[str, Any] = {}
 
-        # Cache for setup_cache results (per class instance)
+        # setup_cache() results, keyed by "module.Class"
         self._setup_cache: dict[str, Any] = {}
 
-        # Add project directory to Python path for imports
         if str(self.project_dir) not in sys.path:
             sys.path.insert(0, str(self.project_dir))
 
     def _reset_random_state(self):
-        """
-        Reset random state to ensure deterministic benchmark execution.
-
-        This patches ALL random number generators (numpy legacy, numpy Generator API,
-        PyTorch, TensorFlow) to use deterministic seeds.
-        """
-        # Use the RNG patcher to ensure all RNGs are deterministic
-        # This handles both legacy and modern numpy RNG, plus PyTorch and TensorFlow
+        """Reseed Python random, the numpy legacy API, PyTorch and TensorFlow."""
         self.rng_patcher.patch_all()
 
     def _evaluate_params_at_runtime(self, benchmark: BenchmarkInfo, module) -> list[list[Any]]:
@@ -81,23 +68,19 @@ class BenchmarkRunner:
             return benchmark.params
 
         try:
-            # Get the class from the module
             benchmark_class = getattr(module, benchmark.class_name)
-            # Access the params attribute
             params = getattr(benchmark_class, "params", None)
             if params is None:
                 return None
 
-            # Convert to the expected format
             if isinstance(params, (list, tuple)):
                 if len(params) > 0 and isinstance(params[0], (list, tuple)):
-                    # Already in the correct format - convert to list of lists
+                    # One list per parameter
                     return [list(p) if isinstance(p, tuple) else p for p in params]
                 else:
-                    # Single parameter list
+                    # One parameter
                     return [list(params) if isinstance(params, tuple) else params]
             else:
-                # Single value
                 return [[params]]
 
         except Exception as e:
@@ -109,18 +92,13 @@ class BenchmarkRunner:
         benchmark: BenchmarkInfo,
         parameters: Optional[tuple[Any, ...]] = None,
     ) -> Optional[TraceResult]:
-        """
-        Execute benchmark with timeout.
-
-        Returns None if timeout is exceeded, otherwise returns TraceResult.
-        """
+        """Run the benchmark; on timeout return a failed TraceResult with a TimeoutError."""
         if self.timeout is None:
-            # No timeout configured, run directly
             return self._run_benchmark_internal(benchmark, parameters)
         if hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread():
             return self._run_with_alarm(benchmark, parameters)
 
-        # Off the main thread no signal can interrupt the benchmark: the wait ends, the benchmark keeps running
+        # Off the main thread no signal can stop the benchmark; it keeps running after the wait ends
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(self._run_benchmark_internal, benchmark, parameters)
         try:
@@ -129,10 +107,8 @@ class BenchmarkRunner:
             return result
         except FuturesTimeoutError:
             logger.warning(f"Benchmark {benchmark.name} timed out after {self.timeout} seconds")
-            # Cancel the future and shutdown without waiting
             future.cancel()
             executor.shutdown(wait=False)
-            # Return a failed trace result for timeout
             return TraceResult(
                 return_value=None,
                 function_name=benchmark.name,
@@ -161,7 +137,7 @@ class BenchmarkRunner:
         def fire(_signum, _frame):
             raise BenchmarkTimeout()
 
-        # imports outside the timer: an import stopped halfway leaves the module broken for every later benchmark
+        # Import before the timer: an import stopped halfway breaks the module for later benchmarks
         try:
             self._reset_random_state()
             self._load_module(benchmark.module_path)
@@ -198,24 +174,20 @@ class BenchmarkRunner:
     def _run_benchmark_internal(
         self, benchmark: BenchmarkInfo, parameters: Optional[tuple[Any, ...]] = None
     ) -> Optional[TraceResult]:
-        """Run a single benchmark with tracing (internal implementation without timeout wrapper)."""
+        """Run a single benchmark with tracing and no timeout."""
 
         try:
-            # Reset random state before each benchmark run for determinism
             self._reset_random_state()
 
-            # Load the benchmark module
             module = self._load_module(benchmark.module_path)
 
-            # Evaluate params at runtime if needed
             if benchmark.needs_runtime_eval:
                 runtime_params = self._evaluate_params_at_runtime(benchmark, module)
                 if runtime_params:
                     benchmark.params = runtime_params
-                    benchmark.needs_runtime_eval = False  # Mark as evaluated
+                    benchmark.needs_runtime_eval = False
 
-            # Handle parameterized benchmarks called without parameters
-            # If benchmark has params but none provided, use first param combination
+            # A parameterized method called without parameters uses the first combination
             if benchmark.params and parameters is None and benchmark.benchmark_type == "method":
                 param_combinations = self.get_param_combinations(benchmark)
                 if param_combinations:
@@ -236,12 +208,10 @@ class BenchmarkRunner:
             error_type = self._categorize_error(e)
             logger.error(f"Error running benchmark {benchmark.name}: {error_type} - {e}")
             if error_type == "parameter_error":
-                # Don't print full traceback for parameter errors
                 pass
             else:
                 traceback.print_exc()
 
-            # Return a failed trace result instead of None
             return TraceResult(
                 return_value=None,
                 function_name=benchmark.name,
@@ -254,9 +224,8 @@ class BenchmarkRunner:
     def run_all_benchmarks(
         self, filter_pattern: Optional[str] = None
     ) -> dict[str, list[TraceResult]]:
-        """Run all discovered benchmarks."""
+        """Run all discovered benchmarks; filter_pattern is a substring of the benchmark name."""
 
-        # Discover benchmarks
         benchmarks = self.discovery.discover_all()
 
         if filter_pattern:
@@ -267,9 +236,7 @@ class BenchmarkRunner:
         for benchmark in benchmarks:
             logger.info(f"Running benchmark: {benchmark.module_path}.{benchmark.name}")
 
-            # Handle runtime evaluation of params
             if benchmark.needs_runtime_eval:
-                # Load module to evaluate params
                 try:
                     module = self._load_module(benchmark.module_path)
                     runtime_params = self._evaluate_params_at_runtime(benchmark, module)
@@ -284,7 +251,6 @@ class BenchmarkRunner:
                     continue
 
             if benchmark.params:
-                # Run with all parameter combinations
                 param_combinations = self.get_param_combinations(benchmark)
                 benchmark_results = []
 
@@ -296,7 +262,6 @@ class BenchmarkRunner:
 
                 results[f"{benchmark.module_path}.{benchmark.name}"] = benchmark_results
             else:
-                # Run without parameters
                 result = self.run_benchmark(benchmark)
                 if result:
                     results[f"{benchmark.module_path}.{benchmark.name}"] = [result]
@@ -305,17 +270,14 @@ class BenchmarkRunner:
 
     def get_param_combinations(self, benchmark: BenchmarkInfo) -> list[tuple[Any, ...]]:
         """Return parameter combinations, evaluating runtime params if needed."""
-        # Ensure params are evaluated if needed
         if benchmark.needs_runtime_eval:
             module = self._load_module(benchmark.module_path)
             runtime_params = self._evaluate_params_at_runtime(benchmark, module)
             if runtime_params:
                 benchmark.params = runtime_params
                 benchmark.needs_runtime_eval = False
-        # Fallback if still no params
         if not benchmark.params:
             return [()]
-        # Build Cartesian product
         import itertools
 
         return list(itertools.product(*benchmark.params))
@@ -325,7 +287,6 @@ class BenchmarkRunner:
         if module_path in self._module_cache:
             return self._module_cache[module_path]
 
-        # Find the module file
         module_file = self.benchmark_dir / f"{module_path.replace('.', '/')}.py"
 
         if not module_file.exists():
@@ -337,49 +298,37 @@ class BenchmarkRunner:
 
         parts = module_path.split(".")
 
-        # Create parent packages if they don't exist
         for i in range(1, len(parts)):
             pkg_name = ".".join(parts[:i])
             if pkg_name not in sys.modules:
                 pkg = types.ModuleType(pkg_name)
-                # Mark as a package by setting __path__ to the directory
                 pkg_dir = self.benchmark_dir / "/".join(parts[:i])
                 if pkg_dir.exists() and pkg_dir.is_dir():
                     pkg.__path__ = [str(pkg_dir)]
                 sys.modules[pkg_name] = pkg
 
-        # Load the module
         spec = importlib.util.spec_from_file_location(module_path, module_file)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load module: {module_path}")
 
         module = importlib.util.module_from_spec(spec)
 
-        # Set __package__ attribute for relative imports to work
-        # This is critical for modules using relative imports like `from .utils import ...`
+        # __package__ must be set for relative imports such as `from .utils import ...`
         if len(parts) > 1:
-            # Module is in a subpackage - parent is the package
             module.__package__ = ".".join(parts[:-1])
         else:
-            # Module is at root of benchmark_dir
-            # If benchmark_dir has __init__.py, it's a package
-            # Modules in it need __package__ set to allow relative imports
-            # Use benchmark_dir name as package name
+            # A top-level module uses the name of benchmark_dir as its package, with or
+            # without __init__.py, so relative imports work
             if (self.benchmark_dir / "__init__.py").exists():
-                # benchmark_dir is a package - use its name as package name
                 module.__package__ = self.benchmark_dir.name
             else:
-                # No __init__.py, but modules might still use relative imports
-                # Create a synthetic package based on directory name
                 module.__package__ = self.benchmark_dir.name
 
-        # Add module to sys.modules before execution (required for relative imports)
+        # Relative imports need the module in sys.modules before it runs
         sys.modules[module_path] = module
 
-        # Ensure the package exists in sys.modules for relative imports to work
         if module.__package__ and module.__package__ not in sys.modules:
             pkg = types.ModuleType(module.__package__)
-            # Set __path__ to benchmark_dir or the appropriate parent directory
             if len(parts) > 1:
                 pkg_dir = self.benchmark_dir / "/".join(parts[:-1])
             else:
@@ -390,7 +339,6 @@ class BenchmarkRunner:
 
         spec.loader.exec_module(module)
 
-        # Cache the module
         self._module_cache[module_path] = module
 
         return module
@@ -400,59 +348,42 @@ class BenchmarkRunner:
     ) -> Optional[TraceResult]:
         """Run a function-level benchmark."""
 
-        # Get the benchmark function
         benchmark_func = getattr(module, benchmark.name, None)
         if benchmark_func is None:
             raise AttributeError(f"Benchmark function {benchmark.name} not found")
 
-        # Start tracing
         self.tracer.start_tracing()
 
         try:
-            # For benchmarks that don't return values, we need to capture the result
-            # of the deepest function call. We'll use AST manipulation to modify
-            # the benchmark function to return its result.
+            # Rewrite a trailing expression statement into a return and use that value directly
             import ast
             import inspect
 
-            # Get the source code of the benchmark function
             try:
                 source = inspect.getsource(benchmark_func)
 
-                # Parse the AST
                 tree = ast.parse(source)
 
-                # Find the function definition
                 func_def = tree.body[0]
 
-                # Find the last statement in the function body
                 if func_def.body:
                     last_stmt = func_def.body[-1]
 
-                    # If the last statement is an expression (like fitting.LevMarLSQFitter()),
-                    # modify it to return the result
                     if isinstance(last_stmt, ast.Expr):
-                        # Create a return statement with the same expression
                         return_stmt = ast.Return(value=last_stmt.value)
                         func_def.body[-1] = return_stmt
 
-                        # Fix missing line numbers for the new AST nodes
                         ast.fix_missing_locations(tree)
 
-                        # Compile the modified function
                         modified_code = compile(tree, f"<modified_{benchmark.name}>", "exec")
 
-                        # Execute in the module's namespace
                         namespace = module.__dict__.copy()
                         exec(modified_code, namespace)
 
-                        # Get the modified function
                         modified_func = namespace[benchmark.name]
 
-                        # Execute the modified function
                         result_value = modified_func()
 
-                        # Create a TraceResult with the captured value
                         result = TraceResult(
                             return_value=result_value,
                             function_name=benchmark.name,
@@ -461,22 +392,18 @@ class BenchmarkRunner:
                             success=True,
                         )
 
-                        # Stop tracing
                         self.tracer.stop_tracing()
                         return result
 
             except Exception:
-                # Fall back to original execution
                 pass
 
-            # Fallback: execute the original function
+            # The rewrite was not possible: run the original function under the tracer
             benchmark_func()
 
-            # Stop tracing and get result
             result = self.tracer.stop_tracing()
 
-            # If tracer didn't capture anything, return success with no data
-            # (e.g., timing-only benchmarks, state modification benchmarks)
+            # Nothing captured (for example, a timing-only benchmark): success with no value
             if result is None:
                 return TraceResult(
                     return_value=None,
@@ -490,7 +417,6 @@ class BenchmarkRunner:
             return result
 
         except Exception as e:
-            # Stop tracing even if benchmark failed
             self.tracer.stop_tracing()
             logger.error(f"Benchmark {benchmark.name} failed: {e}")
             traceback.print_exc()
@@ -508,20 +434,16 @@ class BenchmarkRunner:
     ) -> Optional[TraceResult]:
         """Run a method-level benchmark."""
 
-        # Get the benchmark class
         benchmark_class = getattr(module, benchmark.class_name, None)
         if benchmark_class is None:
             raise AttributeError(f"Benchmark class {benchmark.class_name} not found")
 
-        # Get the benchmark method
         benchmark_method = getattr(benchmark_class, benchmark.name, None)
         if benchmark_method is None:
             raise AttributeError(f"Benchmark method {benchmark.name} not found")
 
-        # Attempt to rewrite the benchmark method so that its final expression
-        # becomes an explicit return statement. This lets us capture the value
-        # even if inner calls execute in C/Cython (unseen by sys.settrace).
-        # Falls back silently if rewriting is not possible.
+        # Rewrite a trailing expression into a return, so the value is captured even when the
+        # inner calls run in C or Cython, which sys.settrace cannot see. On any error, skip it.
         try:
             import ast
             import inspect
@@ -537,11 +459,9 @@ class BenchmarkRunner:
                 tree = ast.parse(dedented)
                 if tree.body and isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
                     func_def = tree.body[0]
-                    # Skip empty bodies
                     if func_def.body:
                         last_stmt = func_def.body[-1]
                         if isinstance(last_stmt, ast.Expr):
-                            # Replace tail expression with return of that expression
                             func_def.body[-1] = ast.Return(value=last_stmt.value)
                             ast.fix_missing_locations(tree)
                             code = compile(
@@ -554,21 +474,17 @@ class BenchmarkRunner:
                             new_func = namespace.get(benchmark.name)
                             if new_func is not None:
                                 setattr(benchmark_class, benchmark.name, new_func)
-                                # Refresh local reference to the possibly replaced method
                                 benchmark_method = getattr(benchmark_class, benchmark.name)
         except Exception:
-            # If anything goes wrong, ignore and continue with original method.
             pass
 
-        # Instantiate the class
         instance = benchmark_class()
 
-        # Run setup_cache if it exists (once per class, cached)
+        # setup_cache runs once per class; its result is reused
         cached_state = None
         if benchmark.has_setup_cache:
             cache_key = f"{benchmark.module_path}.{benchmark.class_name}"
             if cache_key not in self._setup_cache:
-                # Reset random state before setup_cache to ensure determinism
                 self._reset_random_state()
                 setup_cache_method = getattr(instance, "setup_cache", None)
                 if setup_cache_method:
@@ -582,15 +498,12 @@ class BenchmarkRunner:
             else:
                 cached_state = self._setup_cache[cache_key]
 
-        # Run setup if it exists
         if benchmark.has_setup and benchmark.setup_method:
-            # Reset random state before setup to ensure determinism
             self._reset_random_state()
 
             setup_method = getattr(instance, benchmark.setup_method, None)
             if setup_method:
-                # Check if setup expects cached state as first parameter
-                # Inspect the setup method's signature
+                # setup takes the setup_cache result if its first parameter is "state" or "_state"
                 import inspect
 
                 setup_expects_state = False
@@ -598,26 +511,19 @@ class BenchmarkRunner:
                     try:
                         sig = inspect.signature(setup_method)
                         params = list(sig.parameters.keys())
-                        # Skip 'self' if present
                         if params and params[0] == "self":
                             params = params[1:]
-                        # Check if first parameter is 'state' or '_state'
                         if params and (params[0] == "state" or params[0] == "_state"):
                             setup_expects_state = True
                     except (ValueError, TypeError):
-                        # If signature inspection fails, try heuristic
-                        # If we have cached_state and setup has parameters, assume it expects state
                         pass
 
                 if parameters:
-                    # Call setup with parameters
                     if setup_expects_state and cached_state is not None:
-                        # Pass cached state as first argument, then parameters
                         try:
                             setup_method(cached_state, *parameters)
                         except NotImplementedError:
-                            # Setup explicitly indicates this parameter combination is not supported
-                            # Skip this benchmark run
+                            # ASV convention: NotImplementedError in setup skips this combination
                             logger.debug(
                                 f"Setup raised NotImplementedError for parameters {parameters}, skipping"
                             )
@@ -632,7 +538,6 @@ class BenchmarkRunner:
                                 ),
                             )
                         except TypeError as e:
-                            # Try without state if that fails
                             try:
                                 setup_method(*parameters)
                             except NotImplementedError:
@@ -654,7 +559,7 @@ class BenchmarkRunner:
                                     f"Setup method failed with state and parameters: {e}"
                                 )
                     elif benchmark.param_names:
-                        # Use param_names for keyword arguments
+                        # Positional first, then keyword arguments from param_names
                         try:
                             setup_method(*parameters)
                         except NotImplementedError:
@@ -698,7 +603,6 @@ class BenchmarkRunner:
                                 except TypeError:
                                     logger.warning("Setup method also failed without parameters")
                     else:
-                        # No param_names - pass parameters as positional arguments
                         try:
                             setup_method(*parameters)
                         except NotImplementedError:
@@ -722,7 +626,6 @@ class BenchmarkRunner:
                             except TypeError:
                                 logger.warning("Setup method also failed without parameters")
                 else:
-                    # Call setup without parameters (or with state if it expects it)
                     if setup_expects_state and cached_state is not None:
                         try:
                             setup_method(cached_state)
@@ -758,12 +661,10 @@ class BenchmarkRunner:
                         except TypeError as e:
                             logger.warning(f"Setup method failed: {e}")
 
-        # Start tracing
         self.tracer.start_tracing()
 
         try:
-            # Check if benchmark method expects cached state as first parameter
-            # Inspect the benchmark method's signature
+            # The method takes the setup_cache result if its first parameter is "state" or "_state"
             import inspect
 
             method_expects_state = False
@@ -778,7 +679,7 @@ class BenchmarkRunner:
                     if params and (params[0] == "state" or params[0] == "_state"):
                         method_expects_state = True
                 except (ValueError, TypeError):
-                    # If signature inspection fails, fall back to method_params check
+                    # Fall back to the parameter names found by discovery
                     method_expects_state = (
                         benchmark.method_params
                         and len(benchmark.method_params) > 0
@@ -788,14 +689,9 @@ class BenchmarkRunner:
                         )
                     )
 
-            # Execute the benchmark method with parameters
-            # Rule:
-            # - If method expects state and we have cached_state, pass state first
-            # - If method defines its own parameters (method_params), pass them regardless of param_names
-            # - Else if there are no param_names (unnamed param pattern), pass them
-            # - Otherwise, call without parameters (setup-only pattern)
+            # Parameters are passed when the method declares parameters or the class has no
+            # param_names; otherwise only setup receives them.
             if method_expects_state and cached_state is not None:
-                # Pass cached state as first argument, then parameters
                 if parameters:
                     benchmark_method(instance, cached_state, *parameters)
                 else:
@@ -808,11 +704,9 @@ class BenchmarkRunner:
             else:
                 benchmark_method(instance)
 
-            # Stop tracing and get result
             result = self.tracer.stop_tracing()
 
-            # If tracer didn't capture anything, return success with no data
-            # (e.g., timing-only benchmarks, state modification benchmarks)
+            # Nothing captured (for example, a timing-only benchmark): success with no value
             if result is None:
                 return TraceResult(
                     return_value=None,
@@ -826,7 +720,6 @@ class BenchmarkRunner:
             return result
 
         except Exception as e:
-            # Stop tracing even if benchmark failed
             self.tracer.stop_tracing()
             logger.error(f"Benchmark {benchmark.name} failed: {e}")
             traceback.print_exc()
@@ -860,7 +753,7 @@ class BenchmarkRunner:
         return self.tracer.get_trace_stats()
 
     def _categorize_error(self, error: Exception) -> str:
-        """Categorize errors for better handling."""
+        """Return a short error category for logging."""
         error_str = str(error).lower()
 
         if isinstance(error, TimeoutError):
@@ -877,19 +770,12 @@ class BenchmarkRunner:
             return "unknown_error"
 
 
-# ----------------------------------------------------------------------
-# Optional parallel execution (opt-in via the CLI --parallel flag).
-#
-# Benchmarks are CPU-bound and use sys.settrace + per-process RNG seeding
-# and module import state, so a *process* pool (not threads) gives both
-# true parallelism and the isolation needed for deterministic snapshots.
-# Workers only execute + trace + serialize the captured value; the main
-# process keeps doing every SQLite write (SQLite is single-writer).
-# ----------------------------------------------------------------------
+# Parallel execution (CLI --parallel). A process pool gives each worker its own sys.settrace,
+# RNG and import state; the main process does every SQLite write (SQLite has one writer).
 
 
 def default_worker_count() -> int:
-    """Adaptive worker count: min(cpu_count, 8)."""
+    """Return min(cpu_count, 8)."""
     return min(os.cpu_count() or 1, 8)
 
 
@@ -926,13 +812,12 @@ def _execute_one(
 ) -> TaskResult:
     try:
         result = runner.run_benchmark(benchmark, parameters)
-    except Exception as e:  # defensive: run_benchmark already guards internally
+    except Exception as e:  # run_benchmark catches most errors itself
         return TaskResult(ok=False, failure_reason=f"{type(e).__name__}: {e}")
     return _result_to_task_result(result)
 
 
-# Per-worker-process runner, built once by the pool initializer so the
-# module cache / setup_cache are reused across the tasks a worker handles.
+# Built once per worker by the pool initializer, so its module and setup_cache caches are reused
 _WORKER_RUNNER: Optional[BenchmarkRunner] = None
 
 
@@ -963,9 +848,8 @@ def iter_task_results(
 ):
     """Yield ``(idx, TaskResult)`` for every task.
 
-    Falls back to in-process execution for the whole batch when ``max_workers``
-    <= 1, and for individual tasks whose ``(benchmark, params)`` can't be
-    pickled across the process boundary.
+    Runs in the main process when ``max_workers`` <= 1 or there is one task, and for tasks
+    whose ``(benchmark, params)`` cannot be pickled.
     """
     if max_workers <= 1 or len(tasks) <= 1:
         runner = BenchmarkRunner(benchmark_dir, project_dir=project_dir, seed=seed, timeout=timeout)
@@ -991,14 +875,8 @@ def iter_task_results(
     if not picklable:
         return
 
-    # A single worker death (OOM-kill on a memory-heavy benchmark, segfault in
-    # a native extension) breaks the *whole* ProcessPoolExecutor: every pending
-    # future then raises BrokenProcessPool. Marking all of them failed would
-    # poison the entire batch (including the fast benchmarks that would pass)
-    # and turn one bad benchmark into a mass false-skip. Instead, on pool
-    # breakage we re-run every not-yet-completed task in-process, serially.
-    # Serial execution is validated byte-identical to parallel, so this only
-    # costs speed, never correctness.
+    # One dead worker (killed for memory, or a crash in native code) breaks the whole pool.
+    # Then the tasks that did not finish run again serially in the main process.
     done_idx = set()
     pool_broken = False
     fut_to_task = {}
